@@ -100,34 +100,57 @@ def fetch_live_nse_quote(symbol):
 import pandas as pd
 from nsepython import nse_optionchain_scrip
 
+# --- SAFE NSEPYTHON IMPORT ---
+try:
+    from nsepython import nse_optionchain_scrip
+    HAS_NSEPYTHON = True
+except Exception as e:
+    HAS_NSEPYTHON = False
+    print(f"nsepython import warning: {e}")
+
+# --- UPDATED OPTION CHAIN FUNCTION ---
 def fetch_option_chain(symbol):
+    # Check if import succeeded
+    if not HAS_NSEPYTHON:
+        print("nsepython is not available on this server.")
+        return pd.DataFrame()
+
     try:
-        # Clean symbol input (remove .NS if the user passed it)
+        # Clean symbol input (e.g. RELIANCE.NS -> RELIANCE)
         clean_symbol = symbol.replace(".NS", "").strip().upper()
         
         # Fetch payload from NSE
         payload = nse_optionchain_scrip(clean_symbol)
         
-        if not payload or 'records' not in payload or 'data' not in payload['records']:
-            return pd.DataFrame()  # Return empty DataFrame if payload is invalid
+        # Verify structure before parsing
+        if not payload or not isinstance(payload, dict) or 'records' not in payload:
+            return pd.DataFrame()
         
-        data = payload['records']['data']
+        data = payload.get('records', {}).get('data', [])
+        if not data:
+            return pd.DataFrame()
+            
         oc_data = []
-        
         for row in data:
             strike = row.get('strikePrice')
             ce = row.get('CE', {})
             pe = row.get('PE', {})
             
-            oc_data.append({
-                'Strike Price': strike,
-                'Call OI': ce.get('openInterest', 0),
-                'Call LTP': ce.get('lastPrice', 0),
-                'Put LTP': pe.get('lastPrice', 0),
-                'Put OI': pe.get('openInterest', 0)
-            })
+            # Avoid rows that have neither Call nor Put data
+            if ce or pe:
+                oc_data.append({
+                    'Strike Price': strike,
+                    'Call OI': ce.get('openInterest', 0) if ce else 0,
+                    'Call LTP': ce.get('lastPrice', 0) if ce else 0,
+                    'Put LTP': pe.get('lastPrice', 0) if pe else 0,
+                    'Put OI': pe.get('openInterest', 0) if pe else 0
+                })
             
         return pd.DataFrame(oc_data)
+        
+    except Exception as e:
+        print(f"Option Chain Fetch Error: {e}")
+        return pd.DataFrame()
         
     except Exception as e:
         print(f"Option Chain Error: {e}")
