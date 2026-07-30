@@ -153,18 +153,16 @@ st.subheader("Option Chain Analysis")
 symbol = st.text_input("Enter NSE Ticker (e.g. NIFTY, RELIANCE):", value="NIFTY")
 
 if st.button("Fetch Option Chain"):
-    df_oc = fetch_option_chain(symbol)
+  # Fetch Option Chain Data
+df_oc = fetch_option_chain(symbol)
+
+# Safely check if data was successfully fetched
+if df_oc is not None and isinstance(df_oc, pd.DataFrame) and not df_oc.empty:
+    st.dataframe(df_oc)
     
-    if not df_oc.empty:
-        # Create Bar Chart for Call vs Put Open Interest
-        fig = go.Figure()
-        fig.add_trace(go.Bar(x=df_oc['Strike Price'], y=df_oc['Call OI'], name='Call OI', marker_color='red'))
-        fig.add_trace(go.Bar(x=df_oc['Strike Price'], y=df_oc['Put OI'], name='Put OI', marker_color='green'))
-        
-        fig.update_layout(title=f"Option Chain Open Interest for {symbol}", barmode='group')
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.error("Failed to load Option Chain data. Check symbol or try again.")
+    # Plotting code here...
+else:
+    st.warning(f"Could not fetch option chain data for '{symbol}'. NSE servers may be blocking requests or the symbol may be invalid.")
 import streamlit as st
 import yfinance as yf
 
