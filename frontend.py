@@ -144,34 +144,28 @@ st.markdown("---")
 # 5. Option Chain Section (Restored)
 # ---------------------------------------------------------
 st.subheader("Option Chain Data")
+import streamlit as st
+import plotly.graph_objects as go
+from Backend import fetch_option_chain
 
-try:
-    # Fetch Option Chain
-    option_data = nse_optionchain_scrapper("NIFTY")
+# --- OPTION CHAIN SECTION ---
+st.subheader("Option Chain Analysis")
+symbol = st.text_input("Enter NSE Ticker (e.g. NIFTY, RELIANCE):", value="NIFTY")
+
+if st.button("Fetch Option Chain"):
+    df_oc = fetch_option_chain(symbol)
     
-    # Process or display option chain table
-    if option_data and "filtered" in option_data:
-        records = option_data["filtered"]["data"]
-        oc_rows = []
-        for r in records:
-            ce = r.get("CE", {})
-            pe = r.get("PE", {})
-            oc_rows.append({
-                "CALL OI": ce.get("openInterest", 0),
-                "CALL LTP": ce.get("lastPrice", 0),
-                "STRIKE": r.get("strikePrice", 0),
-                "PUT LTP": pe.get("lastPrice", 0),
-                "PUT OI": pe.get("openInterest", 0),
-            })
+    if not df_oc.empty:
+        # Create Bar Chart for Call vs Put Open Interest
+        fig = go.Figure()
+        fig.add_trace(go.Bar(x=df_oc['Strike Price'], y=df_oc['Call OI'], name='Call OI', marker_color='red'))
+        fig.add_trace(go.Bar(x=df_oc['Strike Price'], y=df_oc['Put OI'], name='Put OI', marker_color='green'))
         
-        oc_df = pd.DataFrame(oc_rows)
-        st.dataframe(oc_df, use_container_width=True, height=400)
+        fig.update_layout(title=f"Option Chain Open Interest for {symbol}", barmode='group')
+        st.plotly_chart(fig, use_container_width=True)
     else:
-        st.info("Option chain data is currently updating or offline.")
-
-except Exception as e:
-    st.warning(f"Could not load Option Chain: {e}")
-    import streamlit as st
+        st.error("Failed to load Option Chain data. Check symbol or try again.")
+import streamlit as st
 import yfinance as yf
 
 # 1. Define a list of popular symbols or load them from your SQLite DB
@@ -292,9 +286,6 @@ prev_close = market_data["prev_close"]
 change = market_data["change"]
 p_change = market_data["p_change"]
 
-# Calculate Predicted Difference
-pred_diff = predicted_price - live_price if live_price > 0 else 0.0
-pred_diff_pct = (pred_diff / live_price * 100) if live_price > 0 else 0.0
 
 # Render 5 Equal Columns
 col1, col2, col3, col4, col5 = st.columns(5)
