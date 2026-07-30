@@ -153,8 +153,13 @@ st.subheader("Option Chain Analysis")
 symbol = st.text_input("Enter NSE Ticker (e.g. NIFTY, RELIANCE):", value="NIFTY")
 
 if st.button("Fetch Option Chain"):
-  # Fetch Option Chain Data
-df_oc = fetch_option_chain(symbol)
+    # Notice the 4 spaces indent below:
+    df_oc = fetch_option_chain(symbol)
+    
+    if df_oc is not None and not df_oc.empty:
+        st.dataframe(df_oc)
+    else:
+        st.warning("Could not load option chain data.")
 
 # Safely check if data was successfully fetched
 if df_oc is not None and isinstance(df_oc, pd.DataFrame) and not df_oc.empty:
