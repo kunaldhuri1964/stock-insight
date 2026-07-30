@@ -97,52 +97,41 @@ def fetch_live_nse_quote(symbol):
         return None
 
 # --- FETCH OPTION CHAIN DATA ---
-def fetch_option_chain(symbol, current_price):
-    clean_symbol = symbol.replace(".NS", "").replace(".BO", "").strip().upper()
-    if clean_symbol in INDEX_MAP:
-        clean_symbol = INDEX_MAP[clean_symbol]["nse_symbol"]
+import pandas as pd
+from nsepython import nse_optionchain_scrip
 
+def fetch_option_chain(symbol):
     try:
-        # Fetch from NSE
-        payload = nse_optionchain_scrapper(clean_symbol)
-        data = payload['records']['data']
+        # Clean symbol input (remove .NS if the user passed it)
+        clean_symbol = symbol.replace(".NS", "").strip().upper()
         
-        chain = []
+        # Fetch payload from NSE
+        payload = nse_optionchain_scrip(clean_symbol)
+        
+        if not payload or 'records' not in payload or 'data' not in payload['records']:
+            return pd.DataFrame()  # Return empty DataFrame if payload is invalid
+        
+        data = payload['records']['data']
+        oc_data = []
+        
         for row in data:
             strike = row.get('strikePrice')
             ce = row.get('CE', {})
             pe = row.get('PE', {})
-            chain.append({
-                'Strike': strike,
-                'Call_OI': ce.get('openInterest', 0),
-                'Call_LTP': ce.get('lastPrice', 0),
-                'Call_IV': ce.get('impliedVolatility', 0),
-                'Put_OI': pe.get('openInterest', 0),
-                'Put_LTP': pe.get('lastPrice', 0),
-                'Put_IV': pe.get('impliedVolatility', 0),
+            
+            oc_data.append({
+                'Strike Price': strike,
+                'Call OI': ce.get('openInterest', 0),
+                'Call LTP': ce.get('lastPrice', 0),
+                'Put LTP': pe.get('lastPrice', 0),
+                'Put OI': pe.get('openInterest', 0)
             })
-        df = pd.DataFrame(chain)
-    except Exception:
-        # Fallback simulation if market closed or symbol has no live API chain
-        step = 50 if current_price > 1000 else 10
-        base_strike = round(current_price / step) * step
-        strikes = [base_strike + (i * step) for i in range(-10, 11)]
+            
+        return pd.DataFrame(oc_data)
         
-        rows = []
-        for s in strikes:
-            dist = (s - current_price) / current_price
-            call_oi = int(max(1000, 50000 * np.exp(-abs(dist)*10) + np.random.randint(500, 5000)))
-            put_oi = int(max(1000, 50000 * np.exp(-abs(dist)*10) + np.random.randint(500, 5000)))
-            rows.append({
-                'Strike': s,
-                'Call_OI': call_oi,
-                'Call_LTP': round(max(1, (current_price - s) if current_price > s else 10), 2),
-                'Call_IV': round(15.0 + np.random.rand()*5, 2),
-                'Put_OI': put_oi,
-                'Put_LTP': round(max(1, (s - current_price) if s > current_price else 10), 2),
-                'Put_IV': round(15.0 + np.random.rand()*5, 2),
-            })
-        df = pd.DataFrame(rows)
+    except Exception as e:
+        print(f"Option Chain Error: {e}")
+        return pd.DataFrame()  # Return empty DataFrame on exception
 
     # Filter 10 strikes above and below current price
     df = df.sort_values(by='Strike')
