@@ -1,14 +1,18 @@
-# Backend.py
-
-# Rest of your Backend.py code...
 import sqlite3
 import yfinance as yf
 import pandas as pd
 import numpy as np
 from datetime import timedelta
-from nsepython import nse_get_index_quote, nse_eq, nse_optionchain_scrapper
 from xgboost import XGBClassifier
 from sklearn.model_selection import train_test_split
+
+# --- SAFE NSEPYTHON IMPORT ---
+try:
+    from nsepython import nse_get_index_quote, nse_eq, nse_optionchain_scrip
+    HAS_NSEPYTHON = True
+except Exception as e:
+    HAS_NSEPYTHON = False
+    print(f"nsepython import warning: {e}")
 
 INDEX_MAP = {
     "NIFTY 50": {"nse_symbol": "NIFTY 50", "yf_symbol": "^NSEI"},
@@ -43,7 +47,7 @@ def search_stocks_in_db(search_term=""):
 def fetch_live_nse_quote(symbol):
     clean_symbol = symbol.replace(".NS", "").replace(".BO", "").strip().upper()
     
-    if clean_symbol in INDEX_MAP:
+    if HAS_NSEPYTHON and clean_symbol in INDEX_MAP:
         try:
             index_name = INDEX_MAP[clean_symbol]["nse_symbol"]
             quote = nse_get_index_quote(index_name)
@@ -61,115 +65,103 @@ def fetch_live_nse_quote(symbol):
         except Exception:
             pass
 
-    try:
-        quote = nse_eq(clean_symbol)
-        price_info = quote.get('priceInfo', {})
-        return {
-            "symbol": clean_symbol,
-            "company_name": quote.get('info', {}).get('companyName', clean_symbol),
-            "last_price": float(price_info.get('lastPrice', 0)),
-            "change": float(price_info.get('change', 0)),
-            "pChange": float(price_info.get('pChange', 0)),
-            "day_high": float(price_info.get('intraDayHighLow', {}).get('max', 0)),
-            "day_low": float(price_info.get('intraDayHighLow', {}).get('min', 0)),
-            "open": float(price_info.get('open', 0)),
-            "prev_close": float(price_info.get('previousClose', 0))
-        }
-    except Exception:
-        pass
+    if HAS_NSEPYTHON:
+        try:
+            quote = nse_eq(clean_symbol)
+            price_info = quote.get('priceInfo', {})
+            return {
+                "symbol": clean_symbol,
+                "company_name": quote.get('info', {}).get('companyName', clean_symbol),
+                "last_price": float(price_info.get('lastPrice', 0)),
+                "change": float(price_info.get('change', 0)),
+                "pChange": float(price_info.get('pChange', 0)),
+                "day_high": float(price_info.get('intraDayHighLow', {}).get('max', 0)),
+                "day_low": float(price_info.get('intraDayHighLow', {}).get('min', 0)),
+                "open": float(price_info.get('open', 0)),
+                "prev_close": float(price_info.get('previousClose', 0))
+            }
+        except Exception:
+            pass
         
     try:
-        ticker = f"{clean_symbol}.NS" if not clean_symbol.startswith("^") else clean_symbol
+        ticker = INDEX_MAP[clean_symbol]["yf_symbol"] if clean_symbol in INDEX_MAP else (f"{clean_symbol}.NS" if not clean_symbol.startswith("^") else clean_symbol)
         y_stock = yf.Ticker(ticker)
         fast_info = y_stock.fast_info
+        
+        last_price = float(fast_info['lastPrice'])
+        prev_close = float(fast_info['previousClose'])
+        change = last_price - prev_close
+        p_change = (change / prev_close) * 100 if prev_close != 0 else 0
+        
         return {
             "symbol": clean_symbol,
             "company_name": clean_symbol,
-            "last_price": float(fast_info['lastPrice']),
-            "change": float(fast_info['lastPrice'] - fast_info['previousClose']),
-            "pChange": float((fast_info['lastPrice'] - fast_info['previousClose']) / fast_info['previousClose'] * 100),
+            "last_price": last_price,
+            "change": float(change),
+            "pChange": float(p_change),
             "day_high": float(fast_info['dayHigh']),
             "day_low": float(fast_info['dayLow']),
             "open": float(fast_info['open']),
-            "prev_close": float(fast_info['previousClose'])
+            "prev_close": prev_close
         }
     except Exception:
         return None
 
 # --- FETCH OPTION CHAIN DATA ---
-import pandas as pd
-from nsepython import nse_optionchain_scrip
-
-# --- SAFE NSEPYTHON IMPORT ---
-try:
-    from nsepython import nse_optionchain_scrip
-    HAS_NSEPYTHON = True
-except Exception as e:
-    HAS_NSEPYTHON = False
-    print(f"nsepython import warning: {e}")
-
-# --- UPDATED OPTION CHAIN FUNCTION ---
 def fetch_option_chain(symbol):
-    # Check if import succeeded
-    if not HAS_NSEPYTHON:
-        print("nsepython is not available on this server.")
-        return pd.DataFrame()
+    clean_symbol = symbol.replace(".NS", "").replace(".BO", "").strip().upper()
+    
+    # Attempt 1: Try nsepython if available
+    if HAS_NSEPYTHON:
+        try:
+            payload = nse_optionchain_scrip(clean_symbol)
+            if payload and isinstance(payload, dict) and 'records' in payload:
+                data = payload.get('records', {}).get('data', [])
+                if data:
+                    oc_data = []
+                    for row in data:
+                        strike = row.get('strikePrice')
+                        ce = row.get('CE', {})
+                        pe = row.get('PE', {})
+                        
+                        if ce or pe:
+                            oc_data.append({
+                                'Strike Price': strike,
+                                'Call OI': ce.get('openInterest', 0) if ce else 0,
+                                'Call LTP': ce.get('lastPrice', 0) if ce else 0,
+                                'Put LTP': pe.get('lastPrice', 0) if pe else 0,
+                                'Put OI': pe.get('openInterest', 0) if pe else 0
+                            })
+                    if oc_data:
+                        return pd.DataFrame(oc_data)
+        except Exception as e:
+            print(f"NSE Option Chain Error: {e}")
 
+    # Fallback: Yahoo Finance Option Chain (works reliably on Streamlit Cloud)
     try:
-        # Clean symbol input (e.g. RELIANCE.NS -> RELIANCE)
-        clean_symbol = symbol.replace(".NS", "").strip().upper()
-        
-        # Fetch payload from NSE
-        payload = nse_optionchain_scrip(clean_symbol)
-        
-        # Verify structure before parsing
-        if not payload or not isinstance(payload, dict) or 'records' not in payload:
+        ticker_symbol = INDEX_MAP[clean_symbol]["yf_symbol"] if clean_symbol in INDEX_MAP else f"{clean_symbol}.NS"
+        ticker = yf.Ticker(ticker_symbol)
+        expirations = ticker.options
+        if not expirations:
             return pd.DataFrame()
-        
-        data = payload.get('records', {}).get('data', [])
-        if not data:
-            return pd.DataFrame()
-            
-        oc_data = []
-        for row in data:
-            strike = row.get('strikePrice')
-            ce = row.get('CE', {})
-            pe = row.get('PE', {})
-            
-            # Avoid rows that have neither Call nor Put data
-            if ce or pe:
-                oc_data.append({
-                    'Strike Price': strike,
-                    'Call OI': ce.get('openInterest', 0) if ce else 0,
-                    'Call LTP': ce.get('lastPrice', 0) if ce else 0,
-                    'Put LTP': pe.get('lastPrice', 0) if pe else 0,
-                    'Put OI': pe.get('openInterest', 0) if pe else 0
-                })
-            
-        return pd.DataFrame(oc_data)
-        
-    except Exception as e:
-        print(f"Option Chain Fetch Error: {e}")
-        return pd.DataFrame()
-        
-    except Exception as e:
-        print(f"Option Chain Error: {e}")
-        return pd.DataFrame()  # Return empty DataFrame on exception
 
-    # Filter 10 strikes above and below current price
-    df = df.sort_values(by='Strike')
-    df['Dist'] = abs(df['Strike'] - current_price)
-    closest_idx = df['Dist'].idxmin()
-    start_idx = max(0, closest_idx - 10)
-    end_idx = min(len(df), closest_idx + 11)
-    
-    filtered_df = df.iloc[start_idx:end_idx].drop(columns=['Dist'])
-    
-    total_call_oi = filtered_df['Call_OI'].sum()
-    total_put_oi = filtered_df['Put_OI'].sum()
-    pcr = round(total_put_oi / (total_call_oi + 1e-6), 2)
-    
-    return filtered_df, pcr, total_call_oi, total_put_oi
+        opt = ticker.option_chain(expirations[0])
+        calls = opt.calls[['strike', 'lastPrice', 'openInterest']].copy()
+        puts = opt.puts[['strike', 'lastPrice', 'openInterest']].copy()
+
+        merged = pd.merge(calls, puts, on='strike', how='outer', suffixes=(' Call', ' Put')).fillna(0)
+        merged.rename(columns={
+            'strike': 'Strike Price',
+            'openInterest Call': 'Call OI',
+            'lastPrice Call': 'Call LTP',
+            'lastPrice Put': 'Put LTP',
+            'openInterest Put': 'Put OI'
+        }, inplace=True)
+
+        return merged
+    except Exception as e:
+        print(f"yfinance Option Chain Error: {e}")
+        return pd.DataFrame()
 
 def load_and_prepare_data(symbol, interval="1h", period="730d"):
     clean_symbol = symbol.replace(".NS", "").replace(".BO", "").strip().upper()
