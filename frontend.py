@@ -188,10 +188,11 @@ STOCK_LIST = [
     "BHARTIARTL",
     "ITC",
     "TATAMOTORS"
+    "TechMahindra"
+    "HCLTECH"
 ]
 
-# 2. Render Searchable Selectbox in Sidebar or Main Layout
-st.sidebar.header("🔍 Stock Search")
+
 
 # The user can type into this box to instantly search and autocomplete symbols
 selected_stock = st.sidebar.selectbox(
@@ -231,8 +232,6 @@ st.markdown("""""
 """, unsafe_allow_html=True)
 
 st.title("📈 Candlytix Terminal & Option Chain Visualizer")
-
-st.sidebar.markdown("### 🔍 Search Asset")
 
 import streamlit as st
 import yfinance as yf
