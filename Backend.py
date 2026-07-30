@@ -108,34 +108,65 @@ def fetch_live_nse_quote(symbol):
         return None
 
 # --- FETCH OPTION CHAIN DATA ---
+import requests
+import pandas as pd
+
 def fetch_option_chain(symbol):
-    clean_symbol = symbol.replace(".NS", "").replace(".BO", "").strip().upper()
-    
-    # Attempt 1: Try nsepython if available
-    if HAS_NSEPYTHON:
-        try:
-            payload = nse_optionchain_scrip(clean_symbol)
-            if payload and isinstance(payload, dict) and 'records' in payload:
-                data = payload.get('records', {}).get('data', [])
-                if data:
-                    oc_data = []
-                    for row in data:
-                        strike = row.get('strikePrice')
-                        ce = row.get('CE', {})
-                        pe = row.get('PE', {})
-                        
-                        if ce or pe:
-                            oc_data.append({
-                                'Strike Price': strike,
-                                'Call OI': ce.get('openInterest', 0) if ce else 0,
-                                'Call LTP': ce.get('lastPrice', 0) if ce else 0,
-                                'Put LTP': pe.get('lastPrice', 0) if pe else 0,
-                                'Put OI': pe.get('openInterest', 0) if pe else 0
-                            })
-                    if oc_data:
-                        return pd.DataFrame(oc_data)
-        except Exception as e:
-            print(f"NSE Option Chain Error: {e}")
+    try:
+        symbol = symbol.upper().strip()
+        
+        # 1. Differentiate indices vs stock equities
+        indices = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"]
+        if symbol in indices:
+            url = f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol}"
+        else:
+            url = f"https://www.nseindia.com/api/option-chain-equities?symbol={symbol}"
+
+        # 2. Add realistic browser headers
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Referer": "https://www.nseindia.com/option-chain",
+        }
+
+        session = requests.Session()
+        
+        # 3. First hit home page to establish session cookies (crucial for NSE)
+        session.get("https://www.nseindia.com", headers=headers, timeout=10)
+
+        # 4. Fetch the option chain JSON data
+        response = session.get(url, headers=headers, timeout=10)
+        
+        if response.status_code != 200:
+            return None
+            
+        data = response.json()
+        
+        # 5. Process raw JSON into a clean DataFrame
+        raw_records = data.get("records", {}).get("data", [])
+        
+        processed_data = []
+        for row in raw_records:
+            strike = row.get("strikePrice")
+            ce = row.get("CE", {})
+            pe = row.get("PE", {})
+            
+            if ce or pe:
+                processed_data.append({
+                    "CE_OI": ce.get("openInterest", 0),
+                    "CE_LTP": ce.get("lastPrice", 0),
+                    "Strike": strike,
+                    "PE_LTP": pe.get("lastPrice", 0),
+                    "PE_OI": pe.get("openInterest", 0),
+                })
+                
+        df = pd.DataFrame(processed_data)
+        return df if not df.empty else None
+
+    except Exception as e:
+        print(f"Error fetching option chain: {e}")
+        return None
 
     # Fallback: Yahoo Finance Option Chain (works reliably on Streamlit Cloud)
     try:
