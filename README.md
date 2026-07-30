@@ -18,5 +18,5 @@ An interactive web application built with **Streamlit** and **Python** that allo
 
 1. **Clone the repository:**
    ```bash
-   git clone [https://github.com/kunaldhuri1964/stock-insight.git](https://github.com/YOUR_USERNAME/stock-price-predictor.git)
+   git clone [https://github.com/kunaldhuri1964/stock-insight.git]
    cd stock-price-predictor
