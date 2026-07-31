@@ -1,217 +1,73 @@
-import sqlite3
-import streamlit as st
-import yfinance as yf
 import pandas as pd
-import plotly.graph_objects as go
+import numpy as np
+import lightgbm as lgb
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, roc_auc_score
 
-from Backend import search_stocks_in_db, fetch_live_nse_quote, load_and_prepare_data, train_and_predict, fetch_option_chain
+# Import shared FeatureEngineer
+from prediction_service import FeatureEngineer
 
-# ---------------------------------------------------------
-# 1. Page Configuration & Custom CSS
-# ---------------------------------------------------------
-st.set_page_config(page_title="Nifty 50 & Option Chain Dashboard", layout="wide")
+def create_target_labels(df: pd.DataFrame, horizon: int = 5, multiplier: float = 1.5) -> pd.Series:
+    """Target = 1 if stock rises by (multiplier * ATR) within 5 periods."""
+    future_max_high = df['high'].shift(-horizon).rolling(window=horizon).max()
+    target_threshold = df['close'] + (multiplier * df['atr'])
+    return (future_max_high >= target_threshold).astype(int)
 
-st.markdown("""
-<style>
-    .stApp { background-color: #0b0e14; color: #e0e6ed; }
-    div[data-testid="stMetric"] { background-color: #121721; border: 1px solid #1e293b; padding: 16px; border-radius: 12px; }
-    .groww-badge-green { background-color: rgba(0, 208, 156, 0.15); color: #00d09c; border: 1px solid #00d09c; padding: 6px 14px; border-radius: 20px; font-weight: bold; display: inline-block; }
-    .groww-badge-red { background-color: rgba(235, 87, 87, 0.15); color: #eb5757; border: 1px solid #eb5757; padding: 6px 14px; border-radius: 20px; font-weight: bold; display: inline-block; }
-</style>
-""", unsafe_allow_html=True)
+def train_and_save_options_model(csv_path: str = "historical_ohlc.csv", output_model_path: str = "lgbm_candlestick.txt"):
+    print(f"1. Loading dataset from {csv_path}...")
+    df = pd.read_csv(csv_path)
 
-# ---------------------------------------------------------
-# 2. Helper Functions & Data Fetchers
-# ---------------------------------------------------------
-def load_stock_list_from_db():
-    try:
-        conn = sqlite3.connect("stocks.db")
-        cursor = conn.cursor()
-        cursor.execute("SELECT symbol FROM stocks_table ORDER BY symbol ASC")
-        rows = cursor.fetchall()
-        conn.close()
-        return [r[0] for r in rows]
-    except Exception:
-        return [
-            "NIFTY 50", "NIFTY BANK", "FINNIFTY", "RELIANCE", 
-            "TCS", "INFY", "HDFCBANK", "ICICIBANK", "SBIN", 
-            "BHARTIARTL", "ITC", "TATAMOTORS", "TechMahindra", "HCLTECH"
-        ]
+    print("2. Computing Technical & Options Chain Features...")
+    # Pass ticker symbol to extract options chain data
+    symbol = df['symbol'].iloc[0] if 'symbol' in df.columns else "AAPL"
+    df = FeatureEngineer.extract_features(df, symbol=symbol)
 
-def resolve_ticker(symbol):
-    ticker_map = {
-        "NIFTY 50": "^NSEI",
-        "NIFTY BANK": "^NSEBANK",
-        "FINNIFTY": "NIFTY_FIN_SERVICE.NS"
+    print("3. Generating Labels...")
+    df['target'] = create_target_labels(df, horizon=5, multiplier=1.5)
+    df = df.dropna().reset_index(drop=True)
+
+    # Combined Feature Columns (Price Action + TA-Lib + Options Metrics)
+    feature_cols = [
+        'norm_body', 'norm_upper_shadow', 'norm_lower_shadow', 'candle_direction',
+        'dist_ema_20', 'dist_ema_50', 'rsi', 'adx',
+        'pattern_engulfing', 'pattern_morningstar', 'pattern_eveningstar', 
+        'pattern_hammer', 'pattern_shootingstar',
+        'pcr', 'max_pain_dist', 'straddle_cost_pct', 'avg_iv'
+    ]
+
+    X = df[feature_cols]
+    y = df['target']
+
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
+
+    train_data = lgb.Dataset(X_train, label=y_train)
+    valid_data = lgb.Dataset(X_test, label=y_test, reference=train_data)
+
+    params = {
+        'objective': 'binary',
+        'metric': 'auc',
+        'boosting_type': 'gbdt',
+        'learning_rate': 0.03,
+        'num_leaves': 31,
+        'max_depth': 6,
+        'verbose': -1
     }
-    if symbol in ticker_map:
-        return ticker_map[symbol]
-    elif not symbol.startswith("^") and not symbol.endswith(".NS"):
-        return f"{symbol}.NS"
-    return symbol
 
-@st.cache_data(ttl=15)
-def get_stock_data(ticker):
-    try:
-        t = yf.Ticker(ticker)
-        info = t.fast_info
-        return {
-            "price": info.last_price or 0.0,
-            "prev_close": info.previous_close or 0.0,
-            "high": info.day_high or 0.0,
-            "low": info.day_low or 0.0
-        }
-    except Exception as e:
-        return {"price": 0.0, "prev_close": 0.0, "high": 0.0, "low": 0.0}
-
-# ---------------------------------------------------------
-# 3. Sidebar Search
-# ---------------------------------------------------------
-STOCK_LIST = load_stock_list_from_db()
-
-st.sidebar.header("🔍 Stock Search")
-selected_stock = st.sidebar.selectbox(
-    label="Search or Select Stock / Index",
-    options=STOCK_LIST,
-    index=0,
-    help="Type to search for NSE stocks or major indices"
-)
-
-# ---------------------------------------------------------
-# 4. Top Header & Metrics Bar
-# ---------------------------------------------------------
-active_ticker = resolve_ticker(selected_stock)
-live_data = get_stock_data(active_ticker)
-
-live_price = live_data["price"]
-day_high = live_data["high"]
-day_low = live_data["low"]
-prev_close = live_data["prev_close"]
-
-change = live_price - prev_close if prev_close else 0.0
-p_change = (change / prev_close * 100) if prev_close else 0.0
-
-# Prediction logic
-predicted_price = 24250.50  # Connect your ML model here
-pred_diff = predicted_price - live_price if live_price > 0 else 0.0
-pred_diff_pct = (pred_diff / live_price * 100) if live_price > 0 else 0.0
-
-st.title(f"📊 Market Analysis: {selected_stock}")
-
-col1, col2, col3, col4, col5 = st.columns(5)
-
-with col1:
-    st.metric("Live Price", f"₹{live_price:,.2f}", f"{change:+.2f} ({p_change:+.2f}%)")
-with col2:
-    st.metric("Day High", f"₹{day_high:,.2f}")
-with col3:
-    st.metric("Day Low", f"₹{day_low:,.2f}")
-with col4:
-    st.metric("Prev Close", f"₹{prev_close:,.2f}")
-with col5:
-    st.metric("Predicted Diff", f"₹{pred_diff:,.2f}", f"{pred_diff_pct:+.2f}% Target")
-
-st.markdown("---")
-
-# ---------------------------------------------------------
-# 5. Price Chart & Prediction Overlay
-# ---------------------------------------------------------
-st.subheader("Price Chart & Prediction Overlay")
-
-chart_df = yf.download(active_ticker, period="5d", interval="15m").reset_index()
-
-if not chart_df.empty:
-    if isinstance(chart_df.columns, pd.MultiIndex):
-        chart_df.columns = chart_df.columns.get_level_values(0)
-        
-    chart_df['SMA_20'] = chart_df['Close'].rolling(window=20).mean()
-
-    fig = go.Figure()
-
-    # Candlestick Trace
-    fig.add_trace(go.Candlestick(
-        x=chart_df['Datetime'] if 'Datetime' in chart_df.columns else chart_df['Date'],
-        open=chart_df['Open'], high=chart_df['High'], low=chart_df['Low'], close=chart_df['Close'],
-        name='Price', increasing_line_color='#00d09c', decreasing_line_color='#eb5757'
-    ))
-
-    # SMA Trace
-    fig.add_trace(go.Scatter(
-        x=chart_df['Datetime'] if 'Datetime' in chart_df.columns else chart_df['Date'],
-        y=chart_df['SMA_20'], mode='lines', name='20 SMA', line=dict(color='#5D6D7E', width=1.5)
-    ))
-
-    # Prediction Target Marker
-    if live_price > 0:
-        last_time = chart_df['Datetime'].iloc[-1] if 'Datetime' in chart_df.columns else chart_df['Date'].iloc[-1]
-        fig.add_trace(go.Scatter(
-            x=[last_time], y=[predicted_price],
-            mode='markers+text', name='Predicted Target',
-            text=[f"Target: ₹{predicted_price:,.2f}"], textposition="top center",
-            marker=dict(size=10, color='#00d09c' if pred_diff >= 0 else '#eb5757', symbol='star')
-        ))
-
-    fig.update_layout(
-        template='plotly_dark', paper_bgcolor='#0b0e14', plot_bgcolor='#0b0e14',
-        xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=30, b=10)
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-st.markdown("---")
-
-# ---------------------------------------------------------
-# 6. Option Chain Section
-# ---------------------------------------------------------
-import plotly.graph_objects as go
-import streamlit as st
-
-def render_option_chain_chart(df_oc):
-    if df_oc is None or df_oc.empty:
-        st.warning("No data available to generate chart.")
-        return
-
-    # Filter to 10 strike prices near the middle for better mobile readability
-    mid_idx = len(df_oc) // 2
-    df_chart = df_oc.iloc[max(0, mid_idx - 5) : min(len(df_oc), mid_idx + 5)]
-
-    fig = go.Figure()
-
-    # Call Open Interest (CE)
-    fig.add_trace(
-        go.Bar(
-            x=df_chart["Strike"],
-            y=df_chart["CE_OI"],
-            name="Call OI",
-            marker_color="#eb5757",
-        )
+    print("4. Training LightGBM Model with Options Features...")
+    model = lgb.train(
+        params,
+        train_data,
+        num_boost_round=500,
+        valid_sets=[valid_data],
+        callbacks=[lgb.early_stopping(stopping_rounds=30)]
     )
 
-    # Put Open Interest (PE)
-    fig.add_trace(
-        go.Bar(
-            x=df_chart["Strike"],
-            y=df_chart["PE_OI"],
-            name="Put OI",
-            marker_color="#00d09c",
-        )
-    )
+    y_pred = model.predict(X_test, num_iteration=model.best_iteration)
+    print(f"\nModel ROC-AUC Score: {roc_auc_score(y_test, y_pred):.4f}")
 
-    # Make layout auto-responsive
-    fig.update_layout(
-        title="Open Interest (OI) Distribution",
-        barmode="group",
-        template="plotly_dark",
-        paper_bgcolor="#0b0e14",
-        plot_bgcolor="#0b0e14",
-        # Auto-size properties for responsiveness
-        autosize=True,
-        margin=dict(l=10, r=10, t=40, b=30),
-        legend=dict(
-            orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1
-        ),
-        xaxis=dict(type="category", title="Strike Price"),
-        yaxis=dict(title="Open Interest"),
-    )
+    print(f"5. Saving updated model to '{output_model_path}'...")
+    model.save_model(output_model_path)
+    print("Training finished!")
 
-    # CRITICAL: use_container_width=True enables fluid responsiveness
-    st.plotly_chart(fig, use_container_width=True)
+if __name__ == "__main__":
+    train_and_save_options_model()
