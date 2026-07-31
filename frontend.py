@@ -4,67 +4,91 @@ import pandas as pd
 import plotly.graph_objects as go
 import yfinance as yf
 
-def create_target_labels(df: pd.DataFrame, horizon: int = 5, multiplier: float = 1.5) -> pd.Series:
-    """Target = 1 if stock rises by (multiplier * ATR) within 5 periods."""
-    future_max_high = df['high'].shift(-horizon).rolling(window=horizon).max()
-    target_threshold = df['close'] + (multiplier * df['atr'])
-    return (future_max_high >= target_threshold).astype(int)
+st.set_page_config(page_title="AI Market Prediction Dashboard", layout="wide")
+st.title("📈 Machine Learning Market Prediction Dashboard")
 
-def train_and_save_options_model(csv_path: str = "historical_ohlc.csv", output_model_path: str = "lgbm_candlestick.txt"):
-    print(f"1. Loading dataset from {csv_path}...")
-    df = pd.read_csv(csv_path)
+# Replace this URL with your actual deployed FastAPI backend URL (e.g., on Render)
+BACKEND_URL = "https://your-fastapi-backend.onrender.com/api/v1/predict"
 
-    print("2. Computing Technical & Options Chain Features...")
-    # Pass ticker symbol to extract options chain data
-    symbol = df['symbol'].iloc[0] if 'symbol' in df.columns else "AAPL"
-    df = FeatureEngineer.extract_features(df, symbol=symbol)
+st.sidebar.header("Stock & Timeframe Selection")
+ticker_symbol = st.sidebar.text_input("Enter Ticker (e.g. AAPL, RELIANCE.NS, ^NSEI)", value="AAPL")
+period = st.sidebar.selectbox("History Period", ["3mo", "6mo", "1y"], index=0)
+interval = st.sidebar.selectbox("Timeframe Interval", ["1d", "1h"], index=0)
 
-    print("3. Generating Labels...")
-    df['target'] = create_target_labels(df, horizon=5, multiplier=1.5)
-    df = df.dropna().reset_index(drop=True)
+@st.cache_data(ttl=300)
+def fetch_ohlc_data(symbol, p, i):
+    stock = yf.Ticker(symbol)
+    df = stock.history(period=p, interval=i).reset_index()
+    df.rename(columns={
+        "Date": "timestamp", "Datetime": "timestamp",
+        "Open": "open", "High": "high", 
+        "Low": "low", "Close": "close", "Volume": "volume"
+    }, inplace=True)
+    df['timestamp'] = df['timestamp'].astype(str)
+    return df[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
 
-    # Combined Feature Columns (Price Action + TA-Lib + Options Metrics)
-    feature_cols = [
-        'norm_body', 'norm_upper_shadow', 'norm_lower_shadow', 'candle_direction',
-        'dist_ema_20', 'dist_ema_50', 'rsi', 'adx',
-        'pattern_engulfing', 'pattern_morningstar', 'pattern_eveningstar', 
-        'pattern_hammer', 'pattern_shootingstar',
-        'pcr', 'max_pain_dist', 'straddle_cost_pct', 'avg_iv'
-    ]
+try:
+    df_ohlc = fetch_ohlc_data(ticker_symbol, period, interval)
 
-    X = df[feature_cols]
-    y = df['target']
+    if len(df_ohlc) < 30:
+        st.error("Insufficient market bars returned. Select a longer period.")
+    else:
+        bars_payload = df_ohlc.to_dict(orient="records")
+        payload = {
+            "symbol": ticker_symbol,
+            "timeframe": interval,
+            "bars": bars_payload
+        }
 
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
+        with st.spinner("Connecting to FastAPI Prediction Engine..."):
+            try:
+                response = requests.post(BACKEND_URL, json=payload, timeout=10)
+                
+                if response.status_code == 200:
+                    prediction = response.json()
+                    
+                    # Metrics Display
+                    col1, col2, col3 = st.columns(3)
+                    
+                    signal = prediction["signal"]
+                    prob = prediction["probability"]
+                    
+                    if signal == "BULLISH":
+                        col1.metric("Predicted Signal", "🟢 BULLISH", delta=f"{prob*100:.1f}% Score")
+                    elif signal == "BEARISH":
+                        col1.metric("Predicted Signal", "🔴 BEARISH", delta=f"{(1-prob)*100:.1f}% Score", delta_color="inverse")
+                    else:
+                        col1.metric("Predicted Signal", "⚪ NEUTRAL", delta=f"{prob*100:.1f}% Score")
 
-    train_data = lgb.Dataset(X_train, label=y_train)
-    valid_data = lgb.Dataset(X_test, label=y_test, reference=train_data)
+                    col2.metric("RSI (14)", f"{prediction['market_context']['rsi']:.2f}")
+                    col3.metric("ADX (Trend Strength)", f"{prediction['market_context']['adx']:.2f}")
 
-    params = {
-        'objective': 'binary',
-        'metric': 'auc',
-        'boosting_type': 'gbdt',
-        'learning_rate': 0.03,
-        'num_leaves': 31,
-        'max_depth': 6,
-        'verbose': -1
-    }
+                    # Pattern Findings
+                    st.subheader("🔍 Active Candlestick Patterns Detected")
+                    if prediction["detected_patterns"]:
+                        for pattern in prediction["detected_patterns"]:
+                            st.info(f"Pattern Detected: **{pattern}**")
+                    else:
+                        st.write("No major candlestick patterns active on current candle.")
 
-    print("4. Training LightGBM Model with Options Features...")
-    model = lgb.train(
-        params,
-        train_data,
-        num_boost_round=500,
-        valid_sets=[valid_data],
-        callbacks=[lgb.early_stopping(stopping_rounds=30)]
-    )
+                    # Plotly Candlestick Chart
+                    st.subheader("Interactive Price Chart")
+                    fig = go.Figure(data=[go.Candlestick(
+                        x=df_ohlc['timestamp'],
+                        open=df_ohlc['open'],
+                        high=df_ohlc['high'],
+                        low=df_ohlc['low'],
+                        close=df_ohlc['close'],
+                        name=ticker_symbol
+                    )])
+                    fig.update_layout(xaxis_rangeslider_visible=False, template="plotly_dark", height=500)
+                    st.plotly_chart(fig, use_container_width=True)
 
-    y_pred = model.predict(X_test, num_iteration=model.best_iteration)
-    print(f"\nModel ROC-AUC Score: {roc_auc_score(y_test, y_pred):.4f}")
+                else:
+                    st.error(f"Backend API Error: {response.text}")
 
-    print(f"5. Saving updated model to '{output_model_path}'...")
-    model.save_model(output_model_path)
-    print("Training finished!")
+            except requests.exceptions.ConnectionError:
+                st.error("Cannot reach FastAPI server. Please make sure BACKEND_URL is configured correctly.")
 
-if __name__ == "__main__":
-    train_and_save_options_model()
+except Exception as e:
+    st.error(f"Error loading market data: {e}")
