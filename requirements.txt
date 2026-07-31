@@ -10,3 +10,9 @@ python-dateutil
 nsepython
 xgboost
 beautifulsoup4
+lightgbm
+TA-Lib
+fastapi
+uvicorn
+pydantic
+requests
