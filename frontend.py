@@ -1,11 +1,8 @@
+import streamlit as st
+import requests
 import pandas as pd
-import numpy as np
-import lightgbm as lgb
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report, roc_auc_score
-
-# Import shared FeatureEngineer
-from prediction_service import FeatureEngineer
+import plotly.graph_objects as go
+import yfinance as yf
 
 def create_target_labels(df: pd.DataFrame, horizon: int = 5, multiplier: float = 1.5) -> pd.Series:
     """Target = 1 if stock rises by (multiplier * ATR) within 5 periods."""
