@@ -162,13 +162,56 @@ st.markdown("---")
 # ---------------------------------------------------------
 # 6. Option Chain Section
 # ---------------------------------------------------------
-st.subheader("Option Chain Analysis")
-oc_symbol = st.text_input("Enter NSE Ticker (e.g. NIFTY, RELIANCE):", value="NIFTY", key="oc_symbol")
+import plotly.graph_objects as go
+import streamlit as st
 
-if st.button("Fetch Option Chain"):
-    df_oc = fetch_option_chain(oc_symbol)
-    
-    if df_oc is not None and isinstance(df_oc, pd.DataFrame) and not df_oc.empty:
-        st.dataframe(df_oc)
-    else:
-        st.warning(f"Could not load option chain data for '{oc_symbol}'. NSE servers may be blocking requests or the symbol may be invalid.")
+def render_option_chain_chart(df_oc):
+    if df_oc is None or df_oc.empty:
+        st.warning("No data available to generate chart.")
+        return
+
+    # Filter to 10 strike prices near the middle for better mobile readability
+    mid_idx = len(df_oc) // 2
+    df_chart = df_oc.iloc[max(0, mid_idx - 5) : min(len(df_oc), mid_idx + 5)]
+
+    fig = go.Figure()
+
+    # Call Open Interest (CE)
+    fig.add_trace(
+        go.Bar(
+            x=df_chart["Strike"],
+            y=df_chart["CE_OI"],
+            name="Call OI",
+            marker_color="#eb5757",
+        )
+    )
+
+    # Put Open Interest (PE)
+    fig.add_trace(
+        go.Bar(
+            x=df_chart["Strike"],
+            y=df_chart["PE_OI"],
+            name="Put OI",
+            marker_color="#00d09c",
+        )
+    )
+
+    # Make layout auto-responsive
+    fig.update_layout(
+        title="Open Interest (OI) Distribution",
+        barmode="group",
+        template="plotly_dark",
+        paper_bgcolor="#0b0e14",
+        plot_bgcolor="#0b0e14",
+        # Auto-size properties for responsiveness
+        autosize=True,
+        margin=dict(l=10, r=10, t=40, b=30),
+        legend=dict(
+            orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1
+        ),
+        xaxis=dict(type="category", title="Strike Price"),
+        yaxis=dict(title="Open Interest"),
+    )
+
+    # CRITICAL: use_container_width=True enables fluid responsiveness
+    st.plotly_chart(fig, use_container_width=True)
