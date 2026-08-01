@@ -7,23 +7,58 @@ import yfinance as yf
 
 # --- Page Configuration ---
 st.set_page_config(
-    page_title="AI Market Prediction & Position Dashboard",
+    page_title="Indian Market AI Prediction Dashboard",
     page_icon="📈",
     layout="wide"
 )
 
-st.title("📈 AI Market Prediction & Position Dashboard")
+st.title("🇮🇳 Indian Market AI Real-Time & Horizon Prediction Dashboard")
+
+# --- Top 20 Indian Market Companies (NSE) ---
+TOP_20_INDIAN_STOCKS = {
+    "RELIANCE.NS": "Reliance Industries Ltd.",
+    "TCS.NS": "Tata Consultancy Services Ltd.",
+    "HDFCBANK.NS": "HDFC Bank Ltd.",
+    "INFY.NS": "Infosys Ltd.",
+    "ICICIBANK.NS": "ICICI Bank Ltd.",
+    "HINDUNILVR.NS": "Hindustan Unilever Ltd.",
+    "ITC.NS": "ITC Ltd.",
+    "SBIN.NS": "State Bank of India",
+    "BHARTIARTL.NS": "Bharti Airtel Ltd.",
+    "LTIM.NS": "LTIMindtree Ltd.",
+    "TATAMOTORS.NS": "Tata Motors Ltd.",
+    "TATASTEEL.NS": "Tata Steel Ltd.",
+    "AXISBANK.NS": "Axis Bank Ltd.",
+    "KOTAKBANK.NS": "Kotak Mahindra Bank Ltd.",
+    "LT.NS": "Larsen & Toubro Ltd.",
+    "M&M.NS": "Mahindra & Mahindra Ltd.",
+    "MARUTI.NS": "Maruti Suzuki India Ltd.",
+    "SUNPHARMA.NS": "Sun Pharmaceutical Industries Ltd.",
+    "ULTRACEMCO.NS": "UltraTech Cement Ltd.",
+    "^NSEI": "NIFTY 50 Index"
+}
 
 # --- Sidebar Inputs ---
-st.sidebar.header("Stock & Timeframe Options")
-ticker_symbol = st.sidebar.text_input("Enter Ticker (e.g. AAPL, RELIANCE.NS, ^NSEI)", value="AAPL").strip().upper()
+st.sidebar.header("Indian Stock Selection")
 
-# Flexible History & Interval Selections
-period = st.sidebar.selectbox("History Period", ["1d", "5d", "1mo", "3mo", "6mo", "1y"], index=3)
+# Selectbox for Top 20 Indian Stocks
+selected_company = st.sidebar.selectbox(
+    "Select Indian Stock / Index:",
+    options=list(TOP_20_INDIAN_STOCKS.keys()),
+    format_func=lambda ticker: f"{TOP_20_INDIAN_STOCKS[ticker]} ({ticker})"
+)
+
+# Custom ticker checkbox for other NSE stocks
+use_custom = st.sidebar.checkbox("Or enter another NSE Symbol")
+if use_custom:
+    custom_input = st.sidebar.text_input("Enter NSE Ticker (e.g. WIPRO, ZOMATO)", value="WIPRO").strip().upper()
+    ticker_symbol = custom_input if custom_input.endswith(".NS") or custom_input.startswith("^") else f"{custom_input}.NS"
+else:
+    ticker_symbol = selected_company
+
+period = st.sidebar.selectbox("History Period", ["1d", "5d", "1mo", "3mo", "1y"], index=2)
 interval = st.sidebar.selectbox("Candle Interval", ["5m", "15m", "1h", "1d"], index=2)
 
-account_balance = st.sidebar.number_input("Account Capital ($)", value=10000.0, step=1000.0)
-risk_pct = st.sidebar.slider("Risk Per Trade (%)", min_value=0.5, max_value=5.0, value=2.0) / 100.0
 
 # --- Feature Calculation Engine ---
 class MarketFeatureEngine:
@@ -54,12 +89,12 @@ class MarketFeatureEngine:
         return df
 
     @staticmethod
-    def fetch_options_analytics(symbol: str, spot_price: float) -> dict:
+    def fetch_options_analytics(symbol: str) -> dict:
         try:
             ticker = yf.Ticker(symbol)
             expirations = ticker.options
             if not expirations:
-                return {"pcr": 1.0, "max_pain_dist": 0.0}
+                return {"pcr": 1.0}
 
             chain = ticker.option_chain(expirations[0])
             calls, puts = chain.calls, chain.puts
@@ -67,38 +102,37 @@ class MarketFeatureEngine:
             total_call_oi = calls['openInterest'].fillna(0).sum()
             total_put_oi = puts['openInterest'].fillna(0).sum()
             pcr = (total_put_oi / total_call_oi) if total_call_oi > 0 else 1.0
-
             return {"pcr": float(pcr)}
         except Exception:
             return {"pcr": 1.0}
 
-# --- Position Calculator Engine ---
-def calculate_trade_position(spot_price: float, atr: float, signal: str, balance: float, risk: float):
-    sl_distance = max(atr * 1.5, spot_price * 0.005)
-    tp_distance = sl_distance * 2.0  # 1:2 Risk-Reward Ratio
-    risk_amount = balance * risk
 
-    if signal == "BULLISH":
-        action = "BUY / LONG"
-        stop_loss = spot_price - sl_distance
-        target = spot_price + tp_distance
-    elif signal == "BEARISH":
-        action = "SELL / SHORT"
-        stop_loss = spot_price + sl_distance
-        target = spot_price - tp_distance
-    else:
-        action = "NO TRADE (NEUTRAL)"
-        stop_loss = spot_price
-        target = spot_price
-
-    quantity = int(risk_amount / sl_distance) if sl_distance > 0 else 0
-    return {
-        "action": action,
-        "entry": round(spot_price, 2),
-        "stop_loss": round(stop_loss, 2),
-        "target": round(target, 2),
-        "quantity": max(1, quantity) if signal != "NEUTRAL" else 0
+# --- Multi-Hour Real-Time Horizon Predictor ---
+def predict_hourly_horizons(spot_price: float, atr: float, signal: str):
+    multipliers = {
+        "1hr": 1.0,
+        "2hr": np.sqrt(2),
+        "3hr": np.sqrt(3)
     }
+    
+    predictions = {}
+    direction = 1 if signal == "BULLISH" else (-1 if signal == "BEARISH" else 0)
+    
+    for horizon, mult in multipliers.items():
+        expected_move = atr * mult
+        predicted_target = spot_price + (direction * expected_move)
+        upper_bound = spot_price + expected_move
+        lower_bound = spot_price - expected_move
+        
+        predictions[horizon] = {
+            "target": round(predicted_target, 2),
+            "upper_bound": round(upper_bound, 2),
+            "lower_bound": round(lower_bound, 2),
+            "expected_move": round(expected_move, 2)
+        }
+        
+    return predictions
+
 
 # --- Fetch Market Data ---
 @st.cache_data(ttl=300, show_spinner=False)
@@ -115,17 +149,18 @@ def get_market_data(symbol: str, p: str, i: str):
                 }, inplace=True)
                 df['timestamp'] = pd.to_datetime(df['timestamp']).dt.strftime('%Y-%m-%d %H:%M')
                 info = stock.info
-                long_name = info.get("longName", symbol)
+                long_name = info.get("longName", TOP_20_INDIAN_STOCKS.get(symbol, symbol))
                 return df[['timestamp', 'open', 'high', 'low', 'close', 'volume']], long_name
         except Exception:
             time.sleep(1)
     return pd.DataFrame(), symbol
 
-# --- Execution ---
+
+# --- Execution Engine ---
 df_raw, company_name = get_market_data(ticker_symbol, period, interval)
 
 if df_raw.empty or len(df_raw) < 15:
-    st.error(f"⚠️ Unable to fetch data for **{ticker_symbol}** with period `{period}` and interval `{interval}`. Please check the symbol or try a longer period.")
+    st.error(f"⚠️ Unable to fetch data for **{ticker_symbol}**. Please try changing the history period or interval.")
 else:
     df_feat = MarketFeatureEngine.calculate_technical_indicators(df_raw)
     latest_row = df_feat.iloc[-1]
@@ -133,11 +168,11 @@ else:
     atr_val = float(latest_row['atr'])
     rsi_val = float(latest_row['rsi'])
 
-    # Options Analysis
-    options_data = MarketFeatureEngine.fetch_options_analytics(ticker_symbol, spot_price)
+    # Options PCR Analysis
+    options_data = MarketFeatureEngine.fetch_options_analytics(ticker_symbol)
     pcr = options_data['pcr']
 
-    # Signal Logic
+    # Prediction Logic
     score = 0.50
     if pcr > 1.2 or rsi_val < 35: score += 0.20
     elif pcr < 0.8 or rsi_val > 65: score -= 0.20
@@ -145,55 +180,76 @@ else:
     prob = float(np.clip(score, 0.05, 0.95))
     signal = "BULLISH" if prob > 0.55 else ("BEARISH" if prob < 0.45 else "NEUTRAL")
 
-    # Trade Position Details
-    pos = calculate_trade_position(spot_price, atr_val, signal, account_balance, risk_pct)
+    # Hourly Horizon Predictions
+    horizons = predict_hourly_horizons(spot_price, atr_val, signal)
 
-    # --- Header Information ---
+    # --- Header Banner ---
     st.subheader(f"📌 {company_name} (`{ticker_symbol}`)")
     st.caption(f"Showing **{len(df_raw)}** candles | Period: **{period}** | Timeframe: **{interval}**")
 
     # Metrics Display
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Current Price", f"${spot_price:.2f}")
+    c1.metric("Current Spot Price", f"₹{spot_price:,.2f}")
     c2.metric("Predicted Signal", f"{'🟢' if signal=='BULLISH' else ('🔴' if signal=='BEARISH' else '⚪')} {signal}")
     c3.metric("RSI (14)", f"{rsi_val:.1f}")
     c4.metric("Put-Call Ratio (PCR)", f"{pcr:.2f}")
 
-    # Position Info Box
-    st.info(f"🎯 **Trade Position Plan:** Action: **{pos['action']}** | Entry: **${pos['entry']}** | Target (TP): **${pos['target']}** | Stop Loss (SL): **${pos['stop_loss']}** | Rec. Size: **{pos['quantity']} shares**")
+    st.markdown("---")
 
-    # --- Plotly Candlestick Chart with Prediction Overlay Lines ---
+    # --- Real-Time Hourly Horizon Prediction Cards ---
+    st.subheader("⏱️ Real-Time Horizon Predictions")
+    
+    h1, h2, h3 = st.columns(3)
+    
+    with h1:
+        st.metric("1-Hour Target Prediction", f"₹{horizons['1hr']['target']:,.2f}", 
+                  delta=f"±₹{horizons['1hr']['expected_move']} Expected Range")
+        st.caption(f"Range: ₹{horizons['1hr']['lower_bound']:,.2f} — ₹{horizons['1hr']['upper_bound']:,.2f}")
+
+    with h2:
+        st.metric("2-Hour Target Prediction", f"₹{horizons['2hr']['target']:,.2f}", 
+                  delta=f"±₹{horizons['2hr']['expected_move']} Expected Range")
+        st.caption(f"Range: ₹{horizons['2hr']['lower_bound']:,.2f} — ₹{horizons['2hr']['upper_bound']:,.2f}")
+
+    with h3:
+        st.metric("3-Hour Target Prediction", f"₹{horizons['3hr']['target']:,.2f}", 
+                  delta=f"±₹{horizons['3hr']['expected_move']} Expected Range")
+        st.caption(f"Range: ₹{horizons['3hr']['lower_bound']:,.2f} — ₹{horizons['3hr']['upper_bound']:,.2f}")
+
+    # --- Interactive Chart ---
+    st.markdown("---")
+    st.subheader(f"Interactive Candlestick Chart with 1H, 2H & 3H Target Overlays")
+
     fig = go.Figure()
 
-    # 1. Candlestick Trace
+    # Candlesticks
     fig.add_trace(go.Candlestick(
         x=df_feat['timestamp'],
         open=df_feat['open'], high=df_feat['high'],
         low=df_feat['low'], close=df_feat['close'],
-        name="Price"
+        name=ticker_symbol
     ))
 
-    # 2. Indicators Traces
+    # Moving Averages
     fig.add_trace(go.Scatter(x=df_feat['timestamp'], y=df_feat['ema_20'], line=dict(color='orange', width=1.5), name='EMA 20'))
     fig.add_trace(go.Scatter(x=df_feat['timestamp'], y=df_feat['ema_50'], line=dict(color='blue', width=1.5), name='EMA 50'))
 
-    # 3. Horizontal Predicted Lines (Target, Entry, Stop Loss)
+    # Overlay Horizontal Horizon Lines
     if signal != "NEUTRAL":
-        fig.add_hline(y=pos['target'], line_dash="dash", line_color="green", line_width=2,
-                      annotation_text=f"Predicted Target (TP): ${pos['target']}", annotation_position="top right")
+        fig.add_hline(y=horizons['1hr']['target'], line_dash="dot", line_color="#00FF00", line_width=1.5,
+                      annotation_text=f"1H Target: ₹{horizons['1hr']['target']:,.2f}", annotation_position="top right")
         
-        fig.add_hline(y=pos['stop_loss'], line_dash="dash", line_color="red", line_width=2,
-                      annotation_text=f"Stop Loss (SL): ${pos['stop_loss']}", annotation_position="bottom right")
+        fig.add_hline(y=horizons['2hr']['target'], line_dash="dash", line_color="#00DD88", line_width=2,
+                      annotation_text=f"2H Target: ₹{horizons['2hr']['target']:,.2f}", annotation_position="top right")
 
-        fig.add_hline(y=pos['entry'], line_dash="solid", line_color="yellow", line_width=1,
-                      annotation_text=f"Entry: ${pos['entry']}", annotation_position="top left")
+        fig.add_hline(y=horizons['3hr']['target'], line_dash="solid", line_color="#00AAFF", line_width=2.5,
+                      annotation_text=f"3H Target: ₹{horizons['3hr']['target']:,.2f}", annotation_position="top right")
 
     fig.update_layout(
-        title=f"{ticker_symbol} Price Chart with Target & SL Overlay",
         xaxis_rangeslider_visible=False,
         template="plotly_dark",
         height=600,
-        margin=dict(l=20, r=20, t=40, b=20)
+        margin=dict(l=20, r=20, t=30, b=20)
     )
 
     st.plotly_chart(fig, use_container_width=True)
