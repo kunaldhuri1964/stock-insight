@@ -23,6 +23,7 @@ period = st.sidebar.selectbox("History Period", ["3mo", "6mo", "1y"], index=0)
 interval = st.sidebar.selectbox("Interval", ["1d", "1h"], index=0)
 
 # --- Feature Calculation Engine (Pure Python/Pandas) ---
+# --- Feature Calculation Engine (Pure Python/Pandas) ---
 class MarketFeatureEngine:
 
     @staticmethod
@@ -36,7 +37,9 @@ class MarketFeatureEngine:
         low_close = np.abs(df['low'] - df['close'].shift())
         ranges = pd.concat([high_low, high_close, low_close], axis=1)
         true_range = np.max(ranges, axis=1)
-        df['atr'] = true_range.rolling(14).mean().fillna(method='bfill')
+        
+        # Modern Pandas method (replaces .fillna(method='bfill'))
+        df['atr'] = true_range.rolling(14).mean().bfill()
 
         # RSI (14)
         delta = df['close'].diff()
@@ -66,16 +69,13 @@ class MarketFeatureEngine:
             if not expirations:
                 return {"pcr": 1.0, "max_pain_dist": 0.0, "straddle_cost_pct": 0.02}
 
-            # Nearest Expiry Option Chain
             chain = ticker.option_chain(expirations[0])
             calls, puts = chain.calls, chain.puts
 
-            # Put-Call Ratio (PCR)
             total_call_oi = calls['openInterest'].fillna(0).sum()
             total_put_oi = puts['openInterest'].fillna(0).sum()
             pcr = (total_put_oi / total_call_oi) if total_call_oi > 0 else 1.0
 
-            # Max Pain Calculation
             all_strikes = sorted(list(set(calls['strike']).union(set(puts['strike']))))
             pain_scores = {}
             for s in all_strikes:
