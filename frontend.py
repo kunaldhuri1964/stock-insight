@@ -7,12 +7,22 @@ import yfinance as yf
 
 # --- Page Configuration ---
 st.set_page_config(
-    page_title="Indian Market AI Prediction Dashboard",
+    page_title="Indian Market Live AI Dashboard",
     page_icon="📈",
     layout="wide"
 )
 
-st.title("🇮🇳 Indian Market AI Real-Time & Horizon Prediction Dashboard")
+# --- Auto-Refresh Toggle in Sidebar ---
+st.sidebar.header("🔄 Live Data Stream")
+auto_refresh = st.sidebar.checkbox("Enable 10-Second Auto-Refresh", value=True)
+
+if auto_refresh:
+    # Triggers automatic rerun every 10,000 ms (10 seconds)
+    st.sidebar.caption("🟢 Live Stream: Refreshing every 10s")
+    time.sleep(10)
+    st.rerun()
+
+st.title("🇮🇳 Live Indian Market AI Real-Time & Horizon Prediction Dashboard")
 
 # --- Top 20 Indian Market Companies (NSE) ---
 TOP_20_INDIAN_STOCKS = {
@@ -41,14 +51,12 @@ TOP_20_INDIAN_STOCKS = {
 # --- Sidebar Inputs ---
 st.sidebar.header("Indian Stock Selection")
 
-# Selectbox for Top 20 Indian Stocks
 selected_company = st.sidebar.selectbox(
     "Select Indian Stock / Index:",
     options=list(TOP_20_INDIAN_STOCKS.keys()),
     format_func=lambda ticker: f"{TOP_20_INDIAN_STOCKS[ticker]} ({ticker})"
 )
 
-# Custom ticker checkbox for other NSE stocks
 use_custom = st.sidebar.checkbox("Or enter another NSE Symbol")
 if use_custom:
     custom_input = st.sidebar.text_input("Enter NSE Ticker (e.g. WIPRO, ZOMATO)", value="WIPRO").strip().upper()
@@ -56,11 +64,11 @@ if use_custom:
 else:
     ticker_symbol = selected_company
 
-period = st.sidebar.selectbox("History Period", ["1d", "5d", "1mo", "3mo", "1y"], index=2)
-interval = st.sidebar.selectbox("Candle Interval", ["5m", "15m", "1h", "1d"], index=2)
+period = st.sidebar.selectbox("History Period", ["1d", "5d", "1mo", "3mo", "1y"], index=1)
+interval = st.sidebar.selectbox("Candle Interval", ["1m", "5m", "15m", "1h", "1d"], index=1)
 
 
-# --- Feature Calculation Engine ---
+# --- Feature & Options Chain Calculation Engine ---
 class MarketFeatureEngine:
 
     @staticmethod
@@ -89,30 +97,59 @@ class MarketFeatureEngine:
         return df
 
     @staticmethod
-    def fetch_options_analytics(symbol: str) -> dict:
+    def fetch_options_analytics(symbol: str, spot_price: float) -> dict:
+        """Deep Options Chain Analysis: Calculates PCR, OI Bias, and Volatility Skew."""
+        default_res = {"pcr": 1.0, "oi_bias": 0.0, "max_pain": spot_price, "mean_iv": 0.20}
         try:
             ticker = yf.Ticker(symbol)
             expirations = ticker.options
             if not expirations:
-                return {"pcr": 1.0}
+                return default_res
 
             chain = ticker.option_chain(expirations[0])
             calls, puts = chain.calls, chain.puts
 
+            if calls.empty or puts.empty:
+                return default_res
+
             total_call_oi = calls['openInterest'].fillna(0).sum()
             total_put_oi = puts['openInterest'].fillna(0).sum()
             pcr = (total_put_oi / total_call_oi) if total_call_oi > 0 else 1.0
-            return {"pcr": float(pcr)}
+
+            # Filter Near-the-Money (NTM) Options for OI & IV Sentiment Analysis
+            calls_ntm = calls[abs(calls['strike'] - spot_price) / spot_price <= 0.05]
+            puts_ntm = puts[abs(puts['strike'] - spot_price) / spot_price <= 0.05]
+
+            call_oi_ntm = calls_ntm['openInterest'].fillna(0).sum()
+            put_oi_ntm = puts_ntm['openInterest'].fillna(0).sum()
+            total_ntm_oi = call_oi_ntm + put_oi_ntm
+
+            # Directional bias based on options positioning (-1.0 to +1.0)
+            oi_bias = (put_oi_ntm - call_oi_ntm) / (total_ntm_oi + 1e-9) if total_ntm_oi > 0 else 0.0
+
+            # Average Implied Volatility
+            iv_calls = calls_ntm['impliedVolatility'].fillna(0.20).mean()
+            iv_puts = puts_ntm['impliedVolatility'].fillna(0.20).mean()
+            mean_iv = (iv_calls + iv_puts) / 2.0 if not np.isnan(iv_calls) else 0.20
+
+            return {
+                "pcr": float(pcr),
+                "oi_bias": float(oi_bias),
+                "mean_iv": float(mean_iv)
+            }
         except Exception:
-            return {"pcr": 1.0}
+            return default_res
 
 
-# --- Multi-Hour Real-Time Horizon Predictor ---
-def predict_hourly_horizons(spot_price: float, atr: float, signal: str):
+# --- Options-Integrated Multi-Hour Real-Time Horizon Predictor ---
+def predict_hourly_horizons(spot_price: float, atr: float, signal: str, options_data: dict):
+    # Adjust volatility multiplier dynamically based on Options Chain Implied Volatility
+    iv_factor = max(0.8, min(1.5, options_data.get('mean_iv', 0.20) / 0.20))
+    
     multipliers = {
-        "1hr": 1.0,
-        "2hr": np.sqrt(2),
-        "3hr": np.sqrt(3)
+        "1hr": 1.0 * iv_factor,
+        "2hr": np.sqrt(2) * iv_factor,
+        "3hr": np.sqrt(3) * iv_factor
     }
     
     predictions = {}
@@ -134,10 +171,10 @@ def predict_hourly_horizons(spot_price: float, atr: float, signal: str):
     return predictions
 
 
-# --- Fetch Market Data ---
-@st.cache_data(ttl=300, show_spinner=False)
+# --- Fetch Market Data (TTL set to 5s for fast live updates) ---
+@st.cache_data(ttl=5, show_spinner=False)
 def get_market_data(symbol: str, p: str, i: str):
-    for attempt in range(3):
+    for attempt in range(2):
         try:
             stock = yf.Ticker(symbol)
             df = stock.history(period=p, interval=i).reset_index()
@@ -147,20 +184,20 @@ def get_market_data(symbol: str, p: str, i: str):
                     "Open": "open", "High": "high", 
                     "Low": "low", "Close": "close", "Volume": "volume"
                 }, inplace=True)
-                df['timestamp'] = pd.to_datetime(df['timestamp']).dt.strftime('%Y-%m-%d %H:%M')
+                df['timestamp'] = pd.to_datetime(df['timestamp']).dt.strftime('%H:%M:%S (%d %b)')
                 info = stock.info
                 long_name = info.get("longName", TOP_20_INDIAN_STOCKS.get(symbol, symbol))
                 return df[['timestamp', 'open', 'high', 'low', 'close', 'volume']], long_name
         except Exception:
-            time.sleep(1)
+            time.sleep(0.5)
     return pd.DataFrame(), symbol
 
 
 # --- Execution Engine ---
 df_raw, company_name = get_market_data(ticker_symbol, period, interval)
 
-if df_raw.empty or len(df_raw) < 15:
-    st.error(f"⚠️ Unable to fetch data for **{ticker_symbol}**. Please try changing the history period or interval.")
+if df_raw.empty or len(df_raw) < 10:
+    st.error(f"⚠️ Unable to fetch live data for **{ticker_symbol}**. Please check market hours or select a larger history period.")
 else:
     df_feat = MarketFeatureEngine.calculate_technical_indicators(df_raw)
     latest_row = df_feat.iloc[-1]
@@ -168,28 +205,39 @@ else:
     atr_val = float(latest_row['atr'])
     rsi_val = float(latest_row['rsi'])
 
-    # Options PCR Analysis
-    options_data = MarketFeatureEngine.fetch_options_analytics(ticker_symbol)
+    # Options Chain Analysis
+    options_data = MarketFeatureEngine.fetch_options_analytics(ticker_symbol, spot_price)
     pcr = options_data['pcr']
+    oi_bias = options_data['oi_bias']
 
-    # Prediction Logic
+    # AI Prediction Logic (Technical Indicators + Options Chain Signals)
     score = 0.50
-    if pcr > 1.2 or rsi_val < 35: score += 0.20
-    elif pcr < 0.8 or rsi_val > 65: score -= 0.20
+
+    # Options PCR Signal
+    if pcr > 1.2: score += 0.15
+    elif pcr < 0.8: score -= 0.15
+
+    # Options Open Interest Skew Signal
+    if oi_bias > 0.2: score += 0.10
+    elif oi_bias < -0.2: score -= 0.10
+
+    # RSI Momentum Signal
+    if rsi_val < 35: score += 0.15
+    elif rsi_val > 65: score -= 0.15
 
     prob = float(np.clip(score, 0.05, 0.95))
     signal = "BULLISH" if prob > 0.55 else ("BEARISH" if prob < 0.45 else "NEUTRAL")
 
-    # Hourly Horizon Predictions
-    horizons = predict_hourly_horizons(spot_price, atr_val, signal)
+    # Options-Informed Hourly Horizon Predictions
+    horizons = predict_hourly_horizons(spot_price, atr_val, signal, options_data)
 
-    # --- Header Banner ---
+    # --- Header Banner with Live Clock ---
     st.subheader(f"📌 {company_name} (`{ticker_symbol}`)")
-    st.caption(f"Showing **{len(df_raw)}** candles | Period: **{period}** | Timeframe: **{interval}**")
+    st.caption(f"⚡ **LIVE STREAM** | Last Updated: **{latest_row['timestamp']}** | Period: **{period}** | Timeframe: **{interval}**")
 
     # Metrics Display
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Current Spot Price", f"₹{spot_price:,.2f}")
+    c1.metric("Live Spot Price", f"₹{spot_price:,.2f}")
     c2.metric("Predicted Signal", f"{'🟢' if signal=='BULLISH' else ('🔴' if signal=='BEARISH' else '⚪')} {signal}")
     c3.metric("RSI (14)", f"{rsi_val:.1f}")
     c4.metric("Put-Call Ratio (PCR)", f"{pcr:.2f}")
@@ -197,7 +245,7 @@ else:
     st.markdown("---")
 
     # --- Real-Time Hourly Horizon Prediction Cards ---
-    st.subheader("⏱️ Real-Time Horizon Predictions")
+    st.subheader("⏱️ Live Horizon Targets (1H, 2H, 3H)")
     
     h1, h2, h3 = st.columns(3)
     
@@ -218,7 +266,7 @@ else:
 
     # --- Interactive Chart ---
     st.markdown("---")
-    st.subheader(f"Interactive Candlestick Chart with 1H, 2H & 3H Target Overlays")
+    st.subheader(f"Interactive Candlestick Chart (Auto-Refreshing)")
 
     fig = go.Figure()
 
