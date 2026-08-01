@@ -1,0 +1,12 @@
+{
+  "bearish_marubozu": {
+    "id": "CDLMARUBOZU",
+    "name": "Bearish Marubozu",
+    "rules": "Open equals High, Close equals Low. Long dark body with no wicks."
+  },
+  "bullish_engulfing": {
+    "id": "CDLENGULFING",
+    "name": "Bullish Engulfing",
+    "rules": "Candle 1 is bearish. Candle 2 body completely covers Candle 1 body."
+  }
+}
