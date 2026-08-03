@@ -1,38 +1,121 @@
+import time
 import json
 import pandas as pd
 import yfinance as yf
 import talib
+import matplotlib.pyplot as plt
+import mplfinance as mpf
 
 def load_pdf_rules(json_path="pdf_58_patterns.json"):
-    with open(json_path, "r") as f:
-        return json.load(f)
+    """Loads pattern definitions extracted from your 58 Candlestick PDF."""
+    try:
+        with open(json_path, "r") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
 
-def run_pattern_scan(ticker="BTC-USD", interval="15m", period="1d"):
-    print(f"Fetching live data for {ticker}...")
-    df = yf.download(tickers=ticker, period=period, interval=interval)
+def fetch_live_data_and_chart(ticker="BTC-USD", interval="1m", period="1d"):
+    """
+    Fetches real-time price tick and intraday candlestick data,
+    saves an updated chart image, and returns the dataframe.
+    """
+    ticker_obj = yf.Ticker(ticker)
     
+    # 1. Get exact current live price
+    try:
+        live_price = ticker_obj.fast_info['lastPrice']
+    except Exception:
+        live_price = None
+
+    # 2. Download historical OHLC data for pattern detection
+    df = ticker_obj.history(period=period, interval=interval)
+
+    if df.empty:
+        print("Error: Could not retrieve live data.")
+        return None, None
+
+    # Clean multi-index columns if present
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
 
-    open_p, high_p = df['Open'].values, df['High'].values
-    low_p, close_p = df['Low'].values, df['Close'].values
+    # 3. Update & save live candlestick chart
+    chart_filename = "live_chart.png"
+    mpf.plot(
+        df.tail(40),  # Show last 40 candles on chart
+        type='candle',
+        style='charles',
+        title=f"Live Web Chart: {ticker} (Last Price: ${live_price:.2f if live_price else df['Close'].iloc[-1]:.2f})",
+        ylabel='Price ($)',
+        volume=True,
+        savefig=chart_filename
+    )
+    
+    return df, live_price
 
-    # Scan TA-Lib patterns
+def run_live_pipeline(ticker="BTC-USD", refresh_seconds=15):
+    """
+    Continuous pipeline that updates live prices, updates chart image,
+    and runs 58 pattern detection math on fresh market ticks.
+    """
+    pdf_rules = load_pdf_rules("pdf_58_patterns.json")
     pattern_functions = talib.get_function_groups()['Pattern Recognition']
-    detected = []
 
-    for func_name in pattern_functions:
-        pattern_func = getattr(talib, func_name)
-        result = pattern_func(open_p, high_p, low_p, close_p)
-        latest_signal = result[-1]
+    print(f"Starting Live Non-AI Engine for {ticker} (Refreshing every {refresh_seconds}s)...")
+    
+    while True:
+        df, live_price = fetch_live_data_and_chart(ticker=ticker)
         
-        if latest_signal != 0:
-            detected.append((func_name, "BULLISH" if latest_signal > 0 else "BEARISH"))
+        if df is None:
+            time.sleep(refresh_seconds)
+            continue
 
-    pdf_rules = load_pdf_rules()
-    print(f"\nScan complete. Detected {len(detected)} pattern(s).")
-    for func, sentiment in detected:
-        print(f"-> Pattern: {func} ({sentiment})")
+        open_p = df['Open'].values
+        high_p = df['High'].values
+        low_p = df['Low'].values
+        close_p = df['Close'].values
+
+        detected_patterns = []
+
+        # Run TA-Lib mathematical pattern scans
+        for func_name in pattern_functions:
+            pattern_func = getattr(talib, func_name)
+            result = pattern_func(open_p, high_p, low_p, close_p)
+            latest_signal = result[-1]
+            
+            if latest_signal != 0:
+                sentiment = "BULLISH" if latest_signal > 0 else "BEARISH"
+                detected_patterns.append({
+                    "function": func_name,
+                    "sentiment": sentiment
+                })
+
+        timestamp = df.index[-1]
+        current_display_price = live_price if live_price else close_p[-1]
+
+        # Terminal Display
+        print("\n" + "="*50)
+        print(f" LIVE TICKER REPORT [{timestamp.strftime('%H:%M:%S')}]")
+        print(f" Ticker: {ticker} | REAL-TIME PRICE: ${current_display_price:.2f}")
+        print(f" Live Chart Updated: Saved to 'live_chart.png'")
+        print("="*50)
+
+        if not detected_patterns:
+            print("Patterns Detected: None on current candle.")
+            print("PREDICTION: NEUTRAL")
+        else:
+            print(f"Detected {len(detected_patterns)} Pattern(s):")
+            for match in detected_patterns:
+                func = match["function"]
+                sentiment = match["sentiment"]
+                pdf_info = next((v for k, v in pdf_rules.items() if v.get("id") == func), None)
+                
+                print(f" ► {func} ({sentiment})")
+                if pdf_info:
+                    print(f"   PDF Rule: {pdf_info.get('rules', 'N/A')}")
+
+        print(f"\nWaiting {refresh_seconds} seconds for next tick update...\n")
+        time.sleep(refresh_seconds)
 
 if __name__ == "__main__":
-    run_pattern_scan("BTC-USD")
+    # Runs continuous scanner and chart updater
+    run_live_pipeline("BTC-USD", refresh_seconds=15)
