@@ -301,3 +301,25 @@ else:
     )
 
     st.plotly_chart(fig, use_container_width=True)
+    import streamlit as st
+import time
+
+st.title("NSE Live Market Dashboard")
+
+# -------------------------------------------------------------
+# ADD THIS DECORATOR ABOVE YOUR DISPLAY FUNCTION
+# This refreshes ONLY this fragment silently every 2 seconds
+# -------------------------------------------------------------
+@st.fragment(run_every="2s")
+def render_live_dashboard():
+    # Example: Retrieve data from your Backend.py
+    # live_data = fetch_backend_data()
+    
+    # 1. Display Spot Price silently
+    st.metric(label="NIFTY 50 SPOT", value="₹ 24,574.10")
+    
+    # 2. Display Chart Image silently without whole-screen blur
+    st.image("live_chart.png")
+
+# Call the fragment function inside your layout
+render_live_dashboard()
