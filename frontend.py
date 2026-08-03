@@ -12,16 +12,6 @@ st.set_page_config(
     layout="wide"
 )
 
-# --- Auto-Refresh Toggle in Sidebar ---
-st.sidebar.header("🔄 Live Data Stream")
-auto_refresh = st.sidebar.checkbox("Enable 10-Second Auto-Refresh", value=True)
-
-if auto_refresh:
-    # Triggers automatic rerun every 10,000 ms (10 seconds)
-    st.sidebar.caption("🟢 Live Stream: Refreshing every 10s")
-    time.sleep(10)
-    st.rerun()
-
 st.title("🇮🇳 Live Indian Market AI Real-Time & Horizon Prediction Dashboard")
 
 # --- Top 20 Indian Market Companies (NSE) ---
@@ -49,6 +39,11 @@ TOP_20_INDIAN_STOCKS = {
 }
 
 # --- Sidebar Inputs ---
+st.sidebar.header("🔄 Live Data Stream Controls")
+auto_refresh = st.sidebar.checkbox("Enable 10-Second Auto-Refresh", value=True)
+if auto_refresh:
+    st.sidebar.caption("🟢 Live Fragment Stream Active (Zero Screen Blur)")
+
 st.sidebar.header("Indian Stock Selection")
 
 selected_company = st.sidebar.selectbox(
@@ -143,7 +138,6 @@ class MarketFeatureEngine:
 
 # --- Options-Integrated Multi-Hour Real-Time Horizon Predictor ---
 def predict_hourly_horizons(spot_price: float, atr: float, signal: str, options_data: dict):
-    # Adjust volatility multiplier dynamically based on Options Chain Implied Volatility
     iv_factor = max(0.8, min(1.5, options_data.get('mean_iv', 0.20) / 0.20))
     
     multipliers = {
@@ -171,7 +165,7 @@ def predict_hourly_horizons(spot_price: float, atr: float, signal: str, options_
     return predictions
 
 
-# --- Fetch Market Data (TTL set to 5s for fast live updates) ---
+# --- Fetch Market Data ---
 @st.cache_data(ttl=5, show_spinner=False)
 def get_market_data(symbol: str, p: str, i: str):
     for attempt in range(2):
@@ -193,35 +187,41 @@ def get_market_data(symbol: str, p: str, i: str):
     return pd.DataFrame(), symbol
 
 
-# --- Execution Engine ---
-df_raw, company_name = get_market_data(ticker_symbol, period, interval)
+# --- ISOLATED LIVE STREAM FRAGMENT (Zero Screen Blur) ---
+# Automatically refreshes only the dashboard metrics & chart every 10 seconds if enabled
+@st.fragment(run_every="10s" if auto_refresh else None)
+def render_live_dashboard(ticker: str, p: str, i: str):
+    df_raw, company_name = get_market_data(ticker, p, i)
 
-if df_raw.empty or len(df_raw) < 10:
-    st.error(f"⚠️ Unable to fetch live data for **{ticker_symbol}**. Please check market hours or select a larger history period.")
-else:
+    if df_raw.empty or len(df_raw) < 10:
+        st.error(f"⚠️ Unable to fetch live data for **{ticker}**. Please check market hours or select a larger history period.")
+        return
+
     df_feat = MarketFeatureEngine.calculate_technical_indicators(df_raw)
     latest_row = df_feat.iloc[-1]
-    spot_price = float(latest_row['close'])
+    
+    # Try fetching fast live price, fallback to historical close
+    try:
+        spot_price = float(yf.Ticker(ticker).fast_info['lastPrice'])
+    except Exception:
+        spot_price = float(latest_row['close'])
+
     atr_val = float(latest_row['atr'])
     rsi_val = float(latest_row['rsi'])
 
     # Options Chain Analysis
-    options_data = MarketFeatureEngine.fetch_options_analytics(ticker_symbol, spot_price)
+    options_data = MarketFeatureEngine.fetch_options_analytics(ticker, spot_price)
     pcr = options_data['pcr']
     oi_bias = options_data['oi_bias']
 
-    # AI Prediction Logic (Technical Indicators + Options Chain Signals)
+    # AI Prediction Logic
     score = 0.50
-
-    # Options PCR Signal
     if pcr > 1.2: score += 0.15
     elif pcr < 0.8: score -= 0.15
 
-    # Options Open Interest Skew Signal
     if oi_bias > 0.2: score += 0.10
     elif oi_bias < -0.2: score -= 0.10
 
-    # RSI Momentum Signal
     if rsi_val < 35: score += 0.15
     elif rsi_val > 65: score -= 0.15
 
@@ -231,9 +231,9 @@ else:
     # Options-Informed Hourly Horizon Predictions
     horizons = predict_hourly_horizons(spot_price, atr_val, signal, options_data)
 
-    # --- Header Banner with Live Clock ---
-    st.subheader(f"📌 {company_name} (`{ticker_symbol}`)")
-    st.caption(f"⚡ **LIVE STREAM** | Last Updated: **{latest_row['timestamp']}** | Period: **{period}** | Timeframe: **{interval}**")
+    # --- Header Banner ---
+    st.subheader(f"📌 {company_name} (`{ticker}`)")
+    st.caption(f"⚡ **LIVE STREAM** | Last Updated: **{latest_row['timestamp']}** | Period: **{p}** | Timeframe: **{i}**")
 
     # Metrics Display
     c1, c2, c3, c4 = st.columns(4)
@@ -266,7 +266,7 @@ else:
 
     # --- Interactive Chart ---
     st.markdown("---")
-    st.subheader(f"Interactive Candlestick Chart (Auto-Refreshing)")
+    st.subheader("Interactive Candlestick Chart (Auto-Refreshing)")
 
     fig = go.Figure()
 
@@ -275,7 +275,7 @@ else:
         x=df_feat['timestamp'],
         open=df_feat['open'], high=df_feat['high'],
         low=df_feat['low'], close=df_feat['close'],
-        name=ticker_symbol
+        name=ticker
     ))
 
     # Moving Averages
@@ -301,25 +301,7 @@ else:
     )
 
     st.plotly_chart(fig, use_container_width=True)
-    import streamlit as st
-import time
 
-st.title("NSE Live Market Dashboard")
 
-# -------------------------------------------------------------
-# ADD THIS DECORATOR ABOVE YOUR DISPLAY FUNCTION
-# This refreshes ONLY this fragment silently every 2 seconds
-# -------------------------------------------------------------
-@st.fragment(run_every="2s")
-def render_live_dashboard():
-    # Example: Retrieve data from your Backend.py
-    # live_data = fetch_backend_data()
-    
-    # 1. Display Spot Price silently
-    st.metric(label="NIFTY 50 SPOT", value="₹ 24,574.10")
-    
-    # 2. Display Chart Image silently without whole-screen blur
-    st.image("live_chart.png")
-
-# Call the fragment function inside your layout
-render_live_dashboard()
+# --- EXECUTE THE LIVE FRAGMENT ---
+render_live_dashboard(ticker_symbol, period, interval)
