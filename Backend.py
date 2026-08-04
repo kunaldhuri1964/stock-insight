@@ -7,7 +7,7 @@ import yfinance as yf
 from datetime import timedelta
 from xgboost import XGBClassifier
 from sklearn.model_selection import train_test_split
-from backend import HorizonPredictor
+
 
 
 # Graceful optional imports
