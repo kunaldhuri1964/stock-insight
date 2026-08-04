@@ -6,6 +6,16 @@ import streamlit as st
 import yfinance as yf
 from src.backend import HorizonPredictor
 
+import sys
+from pathlib import Path
+
+# Explicitly append the directory containing frontend.py to Python path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+# Main Imports
+import streamlit as st
+from backend import HorizonPredictor
+
 # --- Page Configuration ---
 st.set_page_config(
     page_title="Indian Market Live AI Dashboard",
