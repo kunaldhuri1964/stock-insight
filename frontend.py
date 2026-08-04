@@ -137,32 +137,22 @@ class MarketFeatureEngine:
 
 
 # --- Options-Integrated Multi-Hour Real-Time Horizon Predictor ---
-def predict_hourly_horizons(spot_price: float, atr: float, signal: str, options_data: dict):
-    iv_factor = max(0.8, min(1.5, options_data.get('mean_iv', 0.20) / 0.20))
+def render_horizon_cards(predictions):
+    st.subheader("⏱️ Live Horizon Targets (1H, 2H, 3H)")
     
-    multipliers = {
-        "1hr": 1.0 * iv_factor,
-        "2hr": np.sqrt(2) * iv_factor,
-        "3hr": np.sqrt(3) * iv_factor
-    }
+    cols = st.columns(3)
+    horizons = ["1H", "2H", "3H"]
     
-    predictions = {}
-    direction = 1 if signal == "BULLISH" else (-1 if signal == "BEARISH" else 0)
-    
-    for horizon, mult in multipliers.items():
-        expected_move = atr * mult
-        predicted_target = spot_price + (direction * expected_move)
-        upper_bound = spot_price + expected_move
-        lower_bound = spot_price - expected_move
-        
-        predictions[horizon] = {
-            "target": round(predicted_target, 2),
-            "upper_bound": round(upper_bound, 2),
-            "lower_bound": round(lower_bound, 2),
-            "expected_move": round(expected_move, 2)
-        }
-        
-    return predictions
+    for idx, h in enumerate(horizons):
+        data = predictions[h]
+        with cols[idx]:
+            st.markdown(f"### {h} Target Range")
+            st.markdown(f"**Expected Center:** ₹{data['center']:.2f}")
+            st.metric(label="Expected Range", value=f"±₹{data['spread']:.2f}")
+            st.info(f"Range: ₹{data['lower']:.2f} — ₹{data['upper']:.2f}")
+            
+            if data['active_patterns']:
+                st.caption(f"Triggers: {', '.join(data['active_patterns'])}")
 
 
 # --- Fetch Market Data ---
