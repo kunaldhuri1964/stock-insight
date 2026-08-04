@@ -5,8 +5,50 @@ import numpy as np
 from datetime import timedelta
 from xgboost import XGBClassifier
 from sklearn.model_selection import train_test_split
+# backend.py
+import joblib
+import numpy as np
+import pandas as pd
+from pipeline import extract_58_candlestick_patterns
 
-# --- SAFE NSEPYTHON IMPORT ---
+class HorizonPredictor:
+    def __init__(self):
+        # Load trained quantile models for 1H, 2H, 3H
+        self.models = {
+            "1H": (joblib.load('models/1H_lower.pkl'), joblib.load('models/1H_upper.pkl')),
+            "2H": (joblib.load('models/2H_lower.pkl'), joblib.load('models/2H_upper.pkl')),
+            "3H": (joblib.load('models/3H_lower.pkl'), joblib.load('models/3H_upper.pkl'))
+        }
+
+    def predict_live_ranges(self, live_df):
+        # Apply pattern extraction on live data
+        df_processed = extract_58_candlestick_patterns(live_df)
+        feature_cols = [c for c in df_processed.columns if c.startswith('pattern_')] + ['net_pattern_score']
+        
+        latest_features = df_processed[feature_cols].iloc[[-1]]
+        current_price = float(live_df['Close'].iloc[-1])
+        
+        # Identify active patterns
+        active_cols = [col.replace('pattern_', '') for col in feature_cols if latest_features[col].values[0] != 0]
+        
+        results = {}
+        for horizon, (model_lower, model_upper) in self.models.items():
+            pred_low_ret = model_lower.predict(latest_features)[0]
+            pred_high_ret = model_upper.predict(latest_features)[0]
+            
+            low_price = current_price * (1 + pred_low_ret)
+            high_price = current_price * (1 + pred_high_ret)
+            center = (low_price + high_price) / 2
+            spread = (high_price - low_price) / 2
+            
+            results[horizon] = {
+                "center": round(center, 2),
+                "lower": round(low_price, 2),
+                "upper": round(high_price, 2),
+                "spread": round(spread, 2),
+                "active_patterns": active_cols
+            }
+        return results
 try:
     from nsepython import nse_get_index_quote, nse_eq, nse_optionchain_scrip
     HAS_NSEPYTHON = True
