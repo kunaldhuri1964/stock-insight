@@ -1,114 +1,22 @@
 import sqlite3
-import yfinance as yf
-import pandas as pd
-import numpy as np
-from datetime import timedelta
-from xgboost import XGBClassifier
-from sklearn.model_selection import train_test_split
-# backend.py
+import requests
 import joblib
 import numpy as np
 import pandas as pd
-from pipeline import extract_58_candlestick_patterns
+import yfinance as yf
+from datetime import timedelta
+from xgboost import XGBClassifier
+from sklearn.model_selection import train_test_split
 
-class HorizonPredictor:
-    def __init__(self):
-        # Load trained quantile models for 1H, 2H, 3H
-        self.models = {
-            "1H": (joblib.load('models/1H_lower.pkl'), joblib.load('models/1H_upper.pkl')),
-            "2H": (joblib.load('models/2H_lower.pkl'), joblib.load('models/2H_upper.pkl')),
-            "3H": (joblib.load('models/3H_lower.pkl'), joblib.load('models/3H_upper.pkl'))
-        }
-        def predict_hourly_horizons(self, spot_price, atr_val=None, signal=0, options_data=None):
-        """
-        Calculates dynamic 1H, 2H, and 3H ranges using spot price, ATR volatility,
-        pattern signal strength, and option chain sentiment.
-        """
-        # 1. Guard against empty spot price
-        if spot_price is None or spot_price <= 0:
-            return {}
-
-        # 2. Safe fallback if ATR is missing or invalid
-        if atr_val is None or atr_val == 0:
-            atr_val = spot_price * 0.005  # Default 0.5% estimate
-
-        # 3. Extract Put-Call Ratio (PCR) sentiment from options_data
-        pcr_bias = 0.0
-        if isinstance(options_data, dict) and options_data:
-            pcr = options_data.get('pcr', 1.0)
-            if pcr is not None:
-                pcr_bias = (pcr - 1.0) * 0.001
-
-        # 4. Multi-horizon scale factors (1H=1x, 2H=1.414x, 3H=1.732x)
-        horizons = {}
-        time_scales = {"1H": 1.0, "2H": 1.414, "3H": 1.732}
-
-        # 5. Compute directional shift
-        signal_strength = signal if signal is not None else 0
-        directional_shift = (signal_strength / 100.0) * (atr_val * 0.2) + (spot_price * pcr_bias)
-
-        for h_name, scale in time_scales.items():
-            expected_center = spot_price + directional_shift
-            half_spread = atr_val * scale
-
-            lower_bound = expected_center - half_spread
-            upper_bound = expected_center + half_spread
-
-            horizons[h_name] = {
-                "center": round(expected_center, 2),
-                "lower": round(lower_bound, 2),
-                "upper": round(upper_bound, 2),
-                "spread": round(half_spread, 2),
-                "range_text": f"₹{lower_bound:.2f} — ₹{upper_bound:.2f}"
-            }
-
-        return horizons
-
-    def predict_live_ranges(self, live_df):
-        """
-        Your existing method for dataframe-based inference.
-        """
-        if live_df.empty:
-            return {}
-        
-        spot_price = float(live_df['Close'].iloc[-1])
-        # Example extracting ATR and signal if present in df
-        atr_val = live_df['ATR'].iloc[-1] if 'ATR' in live_df.columns else spot_price * 0.005
-        signal = live_df['net_pattern_score'].iloc[-1] if 'net_pattern_score' in live_df.columns else 0
-        
-        return self.predict_hourly_horizons(spot_price, atr_val, signal)
-
-    def predict_live_ranges(self, live_df):
-        # Apply pattern extraction on live data
-        df_processed = extract_58_candlestick_patterns(live_df)
-        feature_cols = [c for c in df_processed.columns if c.startswith('pattern_')] + ['net_pattern_score']
-        
-        latest_features = df_processed[feature_cols].iloc[[-1]]
-        current_price = float(live_df['Close'].iloc[-1])
-        
-        # Identify active patterns
-        active_cols = [col.replace('pattern_', '') for col in feature_cols if latest_features[col].values[0] != 0]
-        
-        results = {}
-        for horizon, (model_lower, model_upper) in self.models.items():
-            pred_low_ret = model_lower.predict(latest_features)[0]
-            pred_high_ret = model_upper.predict(latest_features)[0]
-            
-            low_price = current_price * (1 + pred_low_ret)
-            high_price = current_price * (1 + pred_high_ret)
-            center = (low_price + high_price) / 2
-            spread = (high_price - low_price) / 2
-            
-            results[horizon] = {
-                "center": round(center, 2),
-                "lower": round(low_price, 2),
-                "upper": round(high_price, 2),
-                "spread": round(spread, 2),
-                "active_patterns": active_cols
-            }
-        return results
+# Attempt to import optional dependencies safely
 try:
-    from nsepython import nse_get_index_quote, nse_eq, nse_optionchain_scrip
+    from pipeline import extract_58_candlestick_patterns
+    HAS_PIPELINE = True
+except Exception:
+    HAS_PIPELINE = False
+
+try:
+    from nsepython import nse_get_index_quote, nse_eq
     HAS_NSEPYTHON = True
 except Exception as e:
     HAS_NSEPYTHON = False
@@ -123,7 +31,116 @@ INDEX_MAP = {
     "SENSEX": {"nse_symbol": "SENSEX", "yf_symbol": "^BSESN"},
 }
 
-def search_stocks_in_db(search_term=""):
+
+class HorizonPredictor:
+    def __init__(self):
+        # Attempt loading trained quantile models; fallback gracefully if models directory is missing
+        self.models = {}
+        try:
+            self.models = {
+                "1H": (joblib.load('models/1H_lower.pkl'), joblib.load('models/1H_upper.pkl')),
+                "2H": (joblib.load('models/2H_lower.pkl'), joblib.load('models/2H_upper.pkl')),
+                "3H": (joblib.load('models/3H_lower.pkl'), joblib.load('models/3H_upper.pkl'))
+            }
+        except Exception:
+            self.models = {}
+
+    def predict_hourly_horizons(self, spot_price: float, atr_val: float = None, signal: float = 0, options_data: dict = None) -> dict:
+        """
+        Calculates dynamic 1H, 2H, and 3H ranges using spot price, ATR volatility,
+        directional signal score, and options chain sentiment.
+        """
+        if spot_price is None or spot_price <= 0:
+            return {}
+
+        # Default ATR fallback if zero or missing (0.5% default)
+        if atr_val is None or atr_val <= 0:
+            atr_val = spot_price * 0.005
+
+        pcr_bias = 0.0
+        options_sentiment = "Neutral"
+        if isinstance(options_data, dict) and options_data:
+            pcr = options_data.get('pcr', 1.0)
+            if pcr is not None:
+                pcr_bias = (pcr - 1.0) * 0.001
+                if pcr > 1.2:
+                    options_sentiment = "Bullish (PCR > 1.2)"
+                elif pcr < 0.8:
+                    options_sentiment = "Bearish (PCR < 0.8)"
+
+        time_scales = {"1H": 1.0, "2H": 1.414, "3H": 1.732}
+        directional_shift = (float(signal) / 100.0) * (atr_val * 0.2) + (spot_price * pcr_bias)
+
+        horizons = {}
+        for h_name, scale in time_scales.items():
+            expected_center = spot_price + directional_shift
+            half_spread = atr_val * scale
+
+            lower_bound = expected_center - half_spread
+            upper_bound = expected_center + half_spread
+
+            horizons[h_name] = {
+                "center": round(expected_center, 2),
+                "lower": round(lower_bound, 2),
+                "upper": round(upper_bound, 2),
+                "spread": round(half_spread, 2),
+                "range_text": f"₹{lower_bound:,.2f} — ₹{upper_bound:,.2f}",
+                "options_sentiment": options_sentiment,
+                "active_patterns": []
+            }
+
+        return horizons
+
+    def predict_live_ranges(self, live_df: pd.DataFrame) -> dict:
+        """
+        Inference routine accepting live price DataFrames.
+        Integrates pattern extraction pipeline if present or falls back to ATR calculation.
+        """
+        if live_df.empty:
+            return {}
+
+        df_cols = {col.lower(): col for col in live_df.columns}
+        close_col = df_cols.get('close', df_cols.get('close', 'close'))
+        current_price = float(live_df[close_col].iloc[-1])
+
+        # Feature-based Model Pipeline Execution
+        if HAS_PIPELINE and self.models:
+            try:
+                df_processed = extract_58_candlestick_patterns(live_df)
+                feature_cols = [c for c in df_processed.columns if c.startswith('pattern_')] + ['net_pattern_score']
+                latest_features = df_processed[feature_cols].iloc[[-1]]
+                active_cols = [col.replace('pattern_', '') for col in feature_cols if latest_features[col].values[0] != 0]
+
+                results = {}
+                for horizon, (model_lower, model_upper) in self.models.items():
+                    pred_low_ret = model_lower.predict(latest_features)[0]
+                    pred_high_ret = model_upper.predict(latest_features)[0]
+
+                    low_price = current_price * (1 + pred_low_ret)
+                    high_price = current_price * (1 + pred_high_ret)
+                    center = (low_price + high_price) / 2
+                    spread = (high_price - low_price) / 2
+
+                    results[horizon] = {
+                        "center": round(center, 2),
+                        "lower": round(low_price, 2),
+                        "upper": round(high_price, 2),
+                        "spread": round(spread, 2),
+                        "active_patterns": active_cols
+                    }
+                return results
+            except Exception:
+                pass
+
+        # Fallback to Mathematical Volatility Scale if models or pipeline are uninitialized
+        atr_col = df_cols.get('atr', None)
+        atr_val = float(live_df[atr_col].iloc[-1]) if atr_col and atr_col in live_df.columns else current_price * 0.005
+        return self.predict_hourly_horizons(spot_price=current_price, atr_val=atr_val)
+
+
+# --- SQLite Search Helpers ---
+
+def search_stocks_in_db(search_term: str = "") -> list:
     clean_term = search_term.strip()
     if not clean_term:
         query = "SELECT symbol, name FROM stocks ORDER BY symbol ASC LIMIT 500"
@@ -131,12 +148,12 @@ def search_stocks_in_db(search_term=""):
     else:
         query = "SELECT symbol, name FROM stocks WHERE symbol LIKE ? OR name LIKE ? ORDER BY symbol ASC"
         params = (f"%{clean_term}%", f"%{clean_term}%")
-        
+
     try:
         conn = sqlite3.connect("stocks.db")
         df = pd.read_sql_query(query, conn, params=params)
         conn.close()
-        
+
         results = [f"{row['symbol']} - {row['name']}" for _, row in df.iterrows()]
         if not results and clean_term:
             results = [f"{clean_term.upper()} - Custom/Direct Symbol Input"]
@@ -144,9 +161,12 @@ def search_stocks_in_db(search_term=""):
     except Exception:
         return [f"{clean_term.upper() if clean_term else 'RELIANCE'} - Direct Entry"]
 
-def fetch_live_nse_quote(symbol):
+
+# --- Live Quote Processing Helpers ---
+
+def fetch_live_nse_quote(symbol: str) -> dict:
     clean_symbol = symbol.replace(".NS", "").replace(".BO", "").strip().upper()
-    
+
     if HAS_NSEPYTHON and clean_symbol in INDEX_MAP:
         try:
             index_name = INDEX_MAP[clean_symbol]["nse_symbol"]
@@ -182,17 +202,20 @@ def fetch_live_nse_quote(symbol):
             }
         except Exception:
             pass
-        
+
+    # Yahoo Finance Fallback
     try:
-        ticker = INDEX_MAP[clean_symbol]["yf_symbol"] if clean_symbol in INDEX_MAP else (f"{clean_symbol}.NS" if not clean_symbol.startswith("^") else clean_symbol)
+        ticker = INDEX_MAP[clean_symbol]["yf_symbol"] if clean_symbol in INDEX_MAP else (
+            f"{clean_symbol}.NS" if not clean_symbol.startswith("^") else clean_symbol
+        )
         y_stock = yf.Ticker(ticker)
         fast_info = y_stock.fast_info
-        
+
         last_price = float(fast_info['lastPrice'])
         prev_close = float(fast_info['previousClose'])
         change = last_price - prev_close
         p_change = (change / prev_close) * 100 if prev_close != 0 else 0
-        
+
         return {
             "symbol": clean_symbol,
             "company_name": clean_symbol,
@@ -207,68 +230,51 @@ def fetch_live_nse_quote(symbol):
     except Exception:
         return None
 
-# --- FETCH OPTION CHAIN DATA ---
-import requests
-import pandas as pd
 
-def fetch_option_chain(symbol):
+# --- Option Chain Processing Helpers ---
+
+def fetch_option_chain(symbol: str) -> pd.DataFrame:
+    clean_symbol = symbol.replace(".NS", "").replace(".BO", "").strip().upper()
     try:
-        symbol = symbol.upper().strip()
-        
-        # 1. Differentiate indices vs stock equities
         indices = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"]
-        if symbol in indices:
-            url = f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol}"
+        if clean_symbol in indices:
+            url = f"https://www.nseindia.com/api/option-chain-indices?symbol={clean_symbol}"
         else:
-            url = f"https://www.nseindia.com/api/option-chain-equities?symbol={symbol}"
+            url = f"https://www.nseindia.com/api/option-chain-equities?symbol={clean_symbol}"
 
-        # 2. Add realistic browser headers
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept-Language": "en-US,en;q=0.9",
-            "Accept-Encoding": "gzip, deflate, br",
             "Referer": "https://www.nseindia.com/option-chain",
         }
 
         session = requests.Session()
-        
-        # 3. First hit home page to establish session cookies (crucial for NSE)
         session.get("https://www.nseindia.com", headers=headers, timeout=10)
-
-        # 4. Fetch the option chain JSON data
         response = session.get(url, headers=headers, timeout=10)
-        
-        if response.status_code != 200:
-            return None
-            
-        data = response.json()
-        
-        # 5. Process raw JSON into a clean DataFrame
-        raw_records = data.get("records", {}).get("data", [])
-        
-        processed_data = []
-        for row in raw_records:
-            strike = row.get("strikePrice")
-            ce = row.get("CE", {})
-            pe = row.get("PE", {})
-            
-            if ce or pe:
-                processed_data.append({
-                    "CE_OI": ce.get("openInterest", 0),
-                    "CE_LTP": ce.get("lastPrice", 0),
-                    "Strike": strike,
-                    "PE_LTP": pe.get("lastPrice", 0),
-                    "PE_OI": pe.get("openInterest", 0),
-                })
-                
-        df = pd.DataFrame(processed_data)
-        return df if not df.empty else None
 
+        if response.status_code == 200:
+            data = response.json()
+            raw_records = data.get("records", {}).get("data", [])
+            processed_data = []
+            for row in raw_records:
+                strike = row.get("strikePrice")
+                ce = row.get("CE", {})
+                pe = row.get("PE", {})
+                if ce or pe:
+                    processed_data.append({
+                        "Call OI": ce.get("openInterest", 0),
+                        "Call LTP": ce.get("lastPrice", 0),
+                        "Strike Price": strike,
+                        "Put LTP": pe.get("lastPrice", 0),
+                        "Put OI": pe.get("openInterest", 0),
+                    })
+            df = pd.DataFrame(processed_data)
+            if not df.empty:
+                return df
     except Exception as e:
-        print(f"Error fetching option chain: {e}")
-        return None
+        print(f"NSE Option Chain API Error: {e}")
 
-    # Fallback: Yahoo Finance Option Chain (works reliably on Streamlit Cloud)
+    # Yahoo Finance Option Chain Fallback
     try:
         ticker_symbol = INDEX_MAP[clean_symbol]["yf_symbol"] if clean_symbol in INDEX_MAP else f"{clean_symbol}.NS"
         ticker = yf.Ticker(ticker_symbol)
@@ -291,66 +297,73 @@ def fetch_option_chain(symbol):
 
         return merged
     except Exception as e:
-        print(f"yfinance Option Chain Error: {e}")
+        print(f"yfinance Option Chain Fallback Error: {e}")
         return pd.DataFrame()
 
-def load_and_prepare_data(symbol, interval="1h", period="730d"):
+
+# --- Training & Data Pipeline Helpers ---
+
+def load_and_prepare_data(symbol: str, interval: str = "1h", period: str = "730d") -> pd.DataFrame:
     clean_symbol = symbol.replace(".NS", "").replace(".BO", "").strip().upper()
     yf_ticker = INDEX_MAP[clean_symbol]["yf_symbol"] if clean_symbol in INDEX_MAP else f"{clean_symbol}.NS"
 
     df = yf.download(yf_ticker, period=period, interval=interval, progress=False)
     if df.empty and not clean_symbol.startswith("^"):
         df = yf.download(clean_symbol, period=period, interval=interval, progress=False)
-        
+
     if df.empty:
         return None
 
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
 
-    for col in ['Open', 'High', 'Low', 'Close']:
-        if col in df.columns and isinstance(df[col], pd.DataFrame):
-            df[col] = df[col].iloc[:, 0]
+    # Standardize column headers to lowercase
+    df.columns = [c.lower() for c in df.columns]
+
+    required_cols = ['open', 'high', 'low', 'close']
+    if not all(col in df.columns for col in required_cols):
+        return None
 
     if len(df) < 30:
         return None
 
-    df['Body'] = abs(df['Close'] - df['Open'])
-    df['Total_Range'] = df['High'] - df['Low']
-    
-    max_oc = df[['Open', 'Close']].max(axis=1)
-    min_oc = df[['Open', 'Close']].min(axis=1)
+    df['body'] = abs(df['close'] - df['open'])
+    df['total_range'] = df['high'] - df['low']
 
-    df['Upper_Wick'] = df['High'] - max_oc
-    df['Lower_Wick'] = min_oc - df['Low']
+    max_oc = df[['open', 'close']].max(axis=1)
+    min_oc = df[['open', 'close']].min(axis=1)
 
-    df['Body_Ratio'] = df['Body'] / (df['Total_Range'] + 1e-6)
-    df['Upper_Wick_Ratio'] = df['Upper_Wick'] / (df['Total_Range'] + 1e-6)
-    df['Lower_Wick_Ratio'] = df['Lower_Wick'] / (df['Total_Range'] + 1e-6)
+    df['upper_wick'] = df['high'] - max_oc
+    df['lower_wick'] = min_oc - df['low']
 
-    df['Pattern_Hammer'] = ((df['Lower_Wick_Ratio'] > 0.5) & (df['Body_Ratio'] < 0.3)).astype(int)
-    df['Pattern_Doji'] = (df['Body_Ratio'] < 0.1).astype(int)
+    df['body_ratio'] = df['body'] / (df['total_range'] + 1e-6)
+    df['upper_wick_ratio'] = df['upper_wick'] / (df['total_range'] + 1e-6)
+    df['lower_wick_ratio'] = df['lower_wick'] / (df['total_range'] + 1e-6)
 
-    df['SMA_20'] = df['Close'].rolling(window=20).mean()
-    df['Dist_SMA20'] = (df['Close'] - df['SMA_20']) / df['SMA_20']
-    df['ATR'] = df['Total_Range'].rolling(window=14).mean()
+    df['pattern_hammer'] = ((df['lower_wick_ratio'] > 0.5) & (df['body_ratio'] < 0.3)).astype(int)
+    df['pattern_doji'] = (df['body_ratio'] < 0.1).astype(int)
+
+    df['sma_20'] = df['close'].rolling(window=20).mean()
+    df['dist_sma20'] = (df['close'] - df['sma_20']) / df['sma_20']
+    df['atr'] = df['total_range'].rolling(window=14).mean()
 
     df.dropna(inplace=True)
     return df
 
-def train_and_predict(data, prediction_horizon=1):
+
+def train_and_predict(data: pd.DataFrame, prediction_horizon: int = 1):
     feature_cols = [
-        'Body_Ratio', 'Upper_Wick_Ratio', 'Lower_Wick_Ratio',
-        'Pattern_Hammer', 'Pattern_Doji', 'Dist_SMA20'
+        'body_ratio', 'upper_wick_ratio', 'lower_wick_ratio',
+        'pattern_hammer', 'pattern_doji', 'dist_sma20'
     ]
 
-    data['Target'] = (data['Close'].shift(-prediction_horizon) > data['Close']).astype(int)
+    data['target'] = (data['close'].shift(-prediction_horizon) > data['close']).astype(int)
 
     latest_row = data.iloc[[-1]][feature_cols]
     model_df = data.iloc[:-prediction_horizon].dropna()
 
     X = model_df[feature_cols]
-    y = model_df['Target']
+    y = model_df['target']
 
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
 
@@ -361,8 +374,8 @@ def train_and_predict(data, prediction_horizon=1):
     latest_prob = model.predict_proba(latest_row)[0][1]
 
     last_time = data.index[-1]
-    last_price = float(data['Close'].iloc[-1])
-    avg_volatility = float(data['ATR'].iloc[-1]) if 'ATR' in data.columns else (last_price * 0.002)
+    last_price = float(data['close'].iloc[-1])
+    avg_volatility = float(data['atr'].iloc[-1]) if 'atr' in data.columns else (last_price * 0.002)
 
     direction = 1 if latest_pred == 1 else -1
     future_times = [last_time]
