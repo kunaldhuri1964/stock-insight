@@ -19,6 +19,64 @@ class HorizonPredictor:
             "2H": (joblib.load('models/2H_lower.pkl'), joblib.load('models/2H_upper.pkl')),
             "3H": (joblib.load('models/3H_lower.pkl'), joblib.load('models/3H_upper.pkl'))
         }
+        def predict_hourly_horizons(self, spot_price, atr_val=None, signal=0, options_data=None):
+        """
+        Calculates dynamic 1H, 2H, and 3H ranges using spot price, ATR volatility,
+        pattern signal strength, and option chain sentiment.
+        """
+        # 1. Guard against empty spot price
+        if spot_price is None or spot_price <= 0:
+            return {}
+
+        # 2. Safe fallback if ATR is missing or invalid
+        if atr_val is None or atr_val == 0:
+            atr_val = spot_price * 0.005  # Default 0.5% estimate
+
+        # 3. Extract Put-Call Ratio (PCR) sentiment from options_data
+        pcr_bias = 0.0
+        if isinstance(options_data, dict) and options_data:
+            pcr = options_data.get('pcr', 1.0)
+            if pcr is not None:
+                pcr_bias = (pcr - 1.0) * 0.001
+
+        # 4. Multi-horizon scale factors (1H=1x, 2H=1.414x, 3H=1.732x)
+        horizons = {}
+        time_scales = {"1H": 1.0, "2H": 1.414, "3H": 1.732}
+
+        # 5. Compute directional shift
+        signal_strength = signal if signal is not None else 0
+        directional_shift = (signal_strength / 100.0) * (atr_val * 0.2) + (spot_price * pcr_bias)
+
+        for h_name, scale in time_scales.items():
+            expected_center = spot_price + directional_shift
+            half_spread = atr_val * scale
+
+            lower_bound = expected_center - half_spread
+            upper_bound = expected_center + half_spread
+
+            horizons[h_name] = {
+                "center": round(expected_center, 2),
+                "lower": round(lower_bound, 2),
+                "upper": round(upper_bound, 2),
+                "spread": round(half_spread, 2),
+                "range_text": f"₹{lower_bound:.2f} — ₹{upper_bound:.2f}"
+            }
+
+        return horizons
+
+    def predict_live_ranges(self, live_df):
+        """
+        Your existing method for dataframe-based inference.
+        """
+        if live_df.empty:
+            return {}
+        
+        spot_price = float(live_df['Close'].iloc[-1])
+        # Example extracting ATR and signal if present in df
+        atr_val = live_df['ATR'].iloc[-1] if 'ATR' in live_df.columns else spot_price * 0.005
+        signal = live_df['net_pattern_score'].iloc[-1] if 'net_pattern_score' in live_df.columns else 0
+        
+        return self.predict_hourly_horizons(spot_price, atr_val, signal)
 
     def predict_live_ranges(self, live_df):
         # Apply pattern extraction on live data
