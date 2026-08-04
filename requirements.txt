@@ -1,14 +1,13 @@
 streamlit
-plotly
 pandas
 numpy
 yfinance
+xgboost
 scikit-learn
-statsmodels
+joblib
 requests
 python-dateutil
 nsepython
-xgboost
 beautifulsoup4
 lightgbm
 TA-Lib
