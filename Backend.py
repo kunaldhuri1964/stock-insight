@@ -7,7 +7,23 @@ import yfinance as yf
 from datetime import timedelta
 from xgboost import XGBClassifier
 from sklearn.model_selection import train_test_split
+from backend import HorizonPredictor
 
+
+# Graceful optional imports
+try:
+  from pipeline import extract_58_candlestick_patterns
+
+  HAS_PIPELINE = True
+except Exception:
+  HAS_PIPELINE = False
+
+try:
+  from nsepython import nse_eq, nse_get_index_quote
+
+  HAS_NSEPYTHON = True
+except Exception:
+  HAS_NSEPYTHON = False
 # Attempt to import optional dependencies safely
 try:
     from pipeline import extract_58_candlestick_patterns
