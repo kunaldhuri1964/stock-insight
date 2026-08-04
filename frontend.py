@@ -137,22 +137,55 @@ class MarketFeatureEngine:
 
 
 # --- Options-Integrated Multi-Hour Real-Time Horizon Predictor ---
+
 def render_horizon_cards(predictions):
-    st.subheader("⏱️ Live Horizon Targets (1H, 2H, 3H)")
+    st.subheader("⏱️ Options-Integrated Horizon Targets (1H, 2H, 3H)")
     
+    # 1. Guard against empty or invalid prediction payload
+    if not predictions or not isinstance(predictions, dict):
+        st.warning("⚠️ No horizon target data available.")
+        return
+
     cols = st.columns(3)
     horizons = ["1H", "2H", "3H"]
     
     for idx, h in enumerate(horizons):
-        data = predictions[h]
+        # 2. Use .get() to prevent KeyError if a specific horizon is missing
+        data = predictions.get(h, {})
+        if not data:
+            with cols[idx]:
+                st.info(f"### {h} Target\n*Data unavailable*")
+            continue
+            
         with cols[idx]:
             st.markdown(f"### {h} Target Range")
-            st.markdown(f"**Expected Center:** ₹{data['center']:.2f}")
-            st.metric(label="Expected Range", value=f"±₹{data['spread']:.2f}")
-            st.info(f"Range: ₹{data['lower']:.2f} — ₹{data['upper']:.2f}")
             
-            if data['active_patterns']:
-                st.caption(f"Triggers: {', '.join(data['active_patterns'])}")
+            # Extract values safely with defaults
+            center = data.get('center', 0.0)
+            spread = data.get('spread', 0.0)
+            lower = data.get('lower', 0.0)
+            upper = data.get('upper', 0.0)
+            
+            # Display Expected Center Price
+            st.markdown(f"**Expected Center:** ₹{center:,.2f}")
+            
+            # Display Volatility Spread Metric
+            st.metric(label="Expected Spread", value=f"±₹{spread:,.2f}")
+            
+            # Display Dynamic Lower to Upper Range
+            st.info(f"**Range:** ₹{lower:,.2f} — ₹{upper:,.2f}")
+            
+            # 3. Display Active Candlestick Pattern Triggers (if available)
+            active_patterns = data.get('active_patterns', [])
+            if active_patterns:
+                st.caption(f"🎯 **Pattern Triggers:** {', '.join(active_patterns)}")
+            else:
+                st.caption("🎯 **Pattern Triggers:** Neutral / None")
+                
+            # 4. Display Option Chain Sentiment Signals (PCR / Max Pain Bias)
+            pcr_sentiment = data.get('options_sentiment', None)
+            if pcr_sentiment:
+                st.caption(f"📊 **Options Bias:** {pcr_sentiment}")
 
 
 # --- Fetch Market Data ---
