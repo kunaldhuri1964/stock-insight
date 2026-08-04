@@ -51,6 +51,36 @@ def fetch_live_data_and_chart(ticker="BTC-USD", interval="1m", period="1d"):
     )
     
     return df, live_price
+    def extract_58_candlestick_patterns(df):
+    pattern_names = talib.get_function_groups()['Pattern Recognition']
+    for pattern in pattern_names:
+        pattern_func = getattr(talib, pattern)
+        df[f'pattern_{pattern}'] = pattern_func(
+            df['Open'].values, df['High'].values, df['Low'].values, df['Close'].values
+        )
+    pattern_cols = [c for c in df.columns if c.startswith('pattern_')]
+    df['net_pattern_score'] = df[pattern_cols].sum(axis=1)
+    return df
+
+def train_and_save_horizon_models(df, horizon_name, horizon_steps):
+    df = extract_58_candlestick_patterns(df)
+    feature_cols = [c for c in df.columns if c.startswith('pattern_')] + ['net_pattern_score']
+    
+    df['target_return'] = (df['Close'].shift(-horizon_steps) - df['Close']) / df['Close']
+    clean_df = df.dropna()
+    
+    X = clean_df[feature_cols]
+    y = clean_df['target_return']
+    
+    model_lower = lgb.LGBMRegressor(objective='quantile', alpha=0.10, n_estimators=100)
+    model_upper = lgb.LGBMRegressor(objective='quantile', alpha=0.90, n_estimators=100)
+    
+    model_lower.fit(X, y)
+    model_upper.fit(X, y)
+    
+    # Save models to disk for Backend to use
+    joblib.dump(model_lower, f'models/{horizon_name}_lower.pkl')
+    joblib.dump(model_upper, f'models/{horizon_name}_upper.pkl')
 
 def run_live_pipeline(ticker="BTC-USD", refresh_seconds=15):
     """
