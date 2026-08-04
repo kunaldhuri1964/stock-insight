@@ -3,11 +3,80 @@ import pandas as pd
 import lightgbm as lgb
 import talib
 import yfinance as yf
+from backend import HorizonPredictor
+from frontend import render_horizon_cards
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List, Dict, Optional
 
-app = FastAPI(title="Stock Prediction API")
+st.set_page_config(page_title="Multi-Asset Pattern Predictor", layout="wide")
+
+# Initialize Backend Predictor
+predictor = HorizonPredictor()
+
+# Popular Default Watchlist (Indian & Global Indices / Assets)
+DEFAULT_WATCHLIST = {
+    "Nifty 50": "^NSEI",
+    "Bank Nifty": "^NSEBANK",
+    "Sensex": "^BSESN",
+    "S&P 500": "^GSPC",
+    "Gold (USD)": "GC=F",
+    "Crude Oil": "CL=F"
+}
+
+def fetch_live_ohlc(symbol, interval="15m", period="5d"):
+    """Fetches real-time OHLC data dynamically for any ticker."""
+    stock = yf.Ticker(symbol)
+    df = stock.history(period=period, interval=interval)
+    
+    if df.empty:
+        return pd.DataFrame()
+
+    df = df.reset_index()
+    # Keep standardized columns for TA-Lib
+    df = df[['Datetime', 'Open', 'High', 'Low', 'Close', 'Volume']]
+    return df
+
+# --- DYNAMIC CONTROLS IN SIDEBAR ---
+st.sidebar.title("🔍 Market Selector")
+
+# Option 1: Choose from Watchlist Presets
+selected_preset = st.sidebar.selectbox("Quick Select Index / Asset:", ["Custom Search"] + list(DEFAULT_WATCHLIST.keys()))
+
+# Option 2: Custom Ticker Input (Supports any NSE stock, Crypto, Forex, US Stock)
+if selected_preset == "Custom Search":
+    ticker_input = st.sidebar.text_input("Enter Any Stock Symbol (e.g. TATAMOTORS.NS, AAPL, BTC-USD):", "TATAMOTORS.NS")
+    active_symbol = ticker_input.strip()
+else:
+    active_symbol = DEFAULT_WATCHLIST[selected_preset]
+
+interval_choice = st.sidebar.selectbox("Candle Interval", ["5m", "15m", "1h"], index=1)
+
+# --- MAIN DASHBOARD VIEW ---
+st.title(f"📊 Live Pattern Horizon Predictor: `{active_symbol}`")
+
+if st.sidebar.button("Run Prediction", type="primary"):
+    with st.spinner(f"Scanning market patterns for {active_symbol}..."):
+        live_df = fetch_live_ohlc(symbol=active_symbol, interval=interval_choice)
+
+    if not live_df.empty:
+        latest_row = live_df.iloc[-1]
+        
+        # Display Current Asset Banner
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Selected Symbol", active_symbol)
+        col2.metric("Last Price", f"₹{latest_row['Close']:.2f}")
+        col3.metric("Last Candle Time", str(latest_row['Datetime']))
+        
+        st.divider()
+
+        # Pass dynamic data to Backend for pattern detection & prediction
+        predictions = predictor.predict_live_ranges(live_df)
+        
+        # Display dynamic range cards
+        render_horizon_cards(predictions)
+    else:
+        st.error(f"No data found for `{active_symbol}`. For Indian stocks, add `.NS` (e.g., `RELIANCE.NS`, `INFY.NS`).")
 
 # --- Schemas ---
 class OHLCVBar(BaseModel):
