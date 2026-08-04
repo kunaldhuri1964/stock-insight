@@ -4,7 +4,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
-from backend import HorizonPredictor
+from src.backend import HorizonPredictor
 
 # --- Page Configuration ---
 st.set_page_config(
