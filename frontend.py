@@ -1,19 +1,16 @@
+import sys
 import time
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
-from src.backend import HorizonPredictor
 
-import sys
-from pathlib import Path
-
-# Explicitly append the directory containing frontend.py to Python path
+# Ensure root folder is in Python Path for direct imports
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-# Main Imports
-import streamlit as st
 from backend import HorizonPredictor
 
 # --- Page Configuration ---
