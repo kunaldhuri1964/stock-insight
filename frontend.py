@@ -12,7 +12,7 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("🇮🇳 Live Indian Market AI Real-Time Dashboard")
+st.title("🇮🇳 Live Indian Market AI Real-Time & Horizon Prediction Dashboard")
 
 # --- Top 20 Indian Market Companies (NSE) ---
 TOP_20_INDIAN_STOCKS = {
@@ -63,7 +63,7 @@ period = st.sidebar.selectbox("History Period", ["1d", "5d", "1mo", "3mo", "1y"]
 interval = st.sidebar.selectbox("Candle Interval", ["1m", "5m", "15m", "1h", "1d"], index=1)
 
 
-# --- Feature & Options Chain Calculation Engine ---
+# --- Feature & Calculation Engine ---
 class MarketFeatureEngine:
 
     @staticmethod
@@ -135,6 +135,41 @@ class MarketFeatureEngine:
         except Exception:
             return default_res
 
+    @staticmethod
+    def calculate_horizon_targets(spot_price: float, atr_val: float, signal: int, options_data: dict) -> dict:
+        """Calculates 1H, 2H, and 3H target bounds based on ATR, Signal Direction & PCR Sentiment."""
+        pcr = options_data.get('pcr', 1.0)
+        direction = 1 if signal > 0 else (-1 if signal < 0 else 0)
+        
+        predictions = {}
+        horizons = {"1H": 1, "2H": 2, "3H": 3}
+        
+        for name, multiplier in horizons.items():
+            move = atr_val * multiplier * (0.8 if direction != 0 else 0.4)
+            center = spot_price + (move * direction)
+            spread = atr_val * (0.5 * multiplier)
+            
+            lower = center - spread
+            upper = center + spread
+            
+            pcr_sentiment = "Bullish PCR (>1.0)" if pcr > 1.0 else "Bearish PCR (<1.0)"
+            active_triggers = []
+            if direction > 0:
+                active_triggers.append("Bullish Momentum")
+            elif direction < 0:
+                active_triggers.append("Bearish Momentum")
+            
+            predictions[name] = {
+                "center": float(center),
+                "spread": float(spread),
+                "lower": float(lower),
+                "upper": float(upper),
+                "active_patterns": active_triggers,
+                "options_sentiment": pcr_sentiment
+            }
+            
+        return predictions
+
 
 # --- Options Analytics UI Boxes ---
 def render_options_boxes(options_data: dict):
@@ -145,7 +180,6 @@ def render_options_boxes(options_data: dict):
     oi_bias = options_data.get('oi_bias', 0.0)
     mean_iv = options_data.get('mean_iv', 0.20) * 100
 
-    # PCR Box
     with cols[0]:
         st.metric(
             label="Put-Call Ratio (PCR)",
@@ -154,7 +188,6 @@ def render_options_boxes(options_data: dict):
         )
         st.caption("PCR > 1.0 indicates strong put writing (bullish market floor).")
 
-    # OI Bias Box
     with cols[1]:
         st.metric(
             label="NTM Open Interest Bias",
@@ -163,13 +196,52 @@ def render_options_boxes(options_data: dict):
         )
         st.caption("Measures Near-The-Money option open interest distribution.")
 
-    # Implied Volatility Box
     with cols[2]:
         st.metric(
             label="Mean Implied Volatility (IV)",
             value=f"{mean_iv:.1f}%"
         )
         st.caption("Average implied volatility across near-the-money option contracts.")
+
+
+# --- Render Horizon Target Cards (1H, 2H, 3H) ---
+def render_horizon_cards(predictions: dict):
+    st.subheader("⏱️ Live Horizon Targets (1H, 2H, 3H)")
+    
+    if not predictions:
+        st.warning("⚠️ No horizon target data available.")
+        return
+
+    cols = st.columns(3)
+    horizons = ["1H", "2H", "3H"]
+    
+    for idx, h in enumerate(horizons):
+        data = predictions.get(h, {})
+        if not data:
+            with cols[idx]:
+                st.info(f"### {h} Target\n*Data unavailable*")
+            continue
+            
+        with cols[idx]:
+            st.markdown(f"### {h} Target Range")
+            
+            center = data.get('center', 0.0)
+            spread = data.get('spread', 0.0)
+            lower = data.get('lower', 0.0)
+            upper = data.get('upper', 0.0)
+            
+            st.metric(label=f"{h} Center Target", value=f"₹{center:,.2f}", delta=f"±₹{spread:,.2f} Range")
+            st.info(f"**Expected Range:** ₹{lower:,.2f} — ₹{upper:,.2f}")
+            
+            active_patterns = data.get('active_patterns', [])
+            if active_patterns:
+                st.caption(f"🎯 **Triggers:** {', '.join(active_patterns)}")
+            else:
+                st.caption("🎯 **Triggers:** Neutral / None")
+                
+            pcr_sentiment = data.get('options_sentiment', None)
+            if pcr_sentiment:
+                st.caption(f"📊 **Options Bias:** {pcr_sentiment}")
 
 
 # --- Fetch Market Data ---
@@ -194,7 +266,7 @@ def get_market_data(symbol: str, p: str, i: str):
     return pd.DataFrame(), symbol
 
 
-# --- ISOLATED LIVE STREAM FRAGMENT (Zero Screen Blur) ---
+# --- ISOLATED LIVE STREAM FRAGMENT ---
 @st.fragment(run_every="10s" if auto_refresh else None)
 def render_live_dashboard(ticker: str, p: str, i: str):
     df_raw, company_name = get_market_data(ticker, p, i)
@@ -206,7 +278,7 @@ def render_live_dashboard(ticker: str, p: str, i: str):
     df_feat = MarketFeatureEngine.calculate_technical_indicators(df_raw)
     latest_row = df_feat.iloc[-1]
     
-    # Direct live spot price fetch to avoid historical candle delay
+    # Direct live spot price fetch
     try:
         live_ticker = yf.Ticker(ticker)
         fast_price = live_ticker.fast_info.get('lastPrice', None)
@@ -217,6 +289,7 @@ def render_live_dashboard(ticker: str, p: str, i: str):
     except Exception:
         spot_price = float(latest_row['close'])
 
+    atr_val = float(latest_row['atr'])
     rsi_val = float(latest_row['rsi'])
 
     # Options Chain Analysis
@@ -239,6 +312,9 @@ def render_live_dashboard(ticker: str, p: str, i: str):
     signal = 100 if prob > 0.55 else (-100 if prob < 0.45 else 0)
     signal_label = "BULLISH" if signal > 0 else ("BEARISH" if signal < 0 else "NEUTRAL")
 
+    # --- Calculate Horizon Target Predictions ---
+    horizons = MarketFeatureEngine.calculate_horizon_targets(spot_price, atr_val, signal, options_data)
+
     # --- Header Banner ---
     st.subheader(f"📌 {company_name} (`{ticker}`)")
     st.caption(f"⚡ **LIVE STREAM** | Last Updated: **{latest_row['timestamp']}** | Period: **{p}** | Timeframe: **{i}**")
@@ -252,12 +328,17 @@ def render_live_dashboard(ticker: str, p: str, i: str):
 
     st.markdown("---")
 
-    # --- RESTORED OPTIONS ANALYTICS 3 BOXES ---
+    # --- 1H, 2H, 3H HORIZON PREDICTION CARDS ---
+    render_horizon_cards(horizons)
+
+    st.markdown("---")
+
+    # --- OPTIONS ANALYTICS BOXES ---
     render_options_boxes(options_data)
 
     st.markdown("---")
 
-    # --- Interactive Chart ---
+    # --- Interactive Chart with Prediction Target Overlay Lines ---
     st.subheader("Interactive Candlestick Chart (Auto-Refreshing)")
 
     fig = go.Figure()
@@ -273,6 +354,22 @@ def render_live_dashboard(ticker: str, p: str, i: str):
     # Moving Averages
     fig.add_trace(go.Scatter(x=df_feat['timestamp'], y=df_feat['ema_20'], line=dict(color='orange', width=1.5), name='EMA 20'))
     fig.add_trace(go.Scatter(x=df_feat['timestamp'], y=df_feat['ema_50'], line=dict(color='blue', width=1.5), name='EMA 50'))
+
+    # Overlay Horizontal Prediction Horizon Lines on Chart
+    if horizons and signal_label != "NEUTRAL":
+        h1_target = horizons.get('1H', {}).get('center', None)
+        h2_target = horizons.get('2H', {}).get('center', None)
+        h3_target = horizons.get('3H', {}).get('center', None)
+
+        if h1_target:
+            fig.add_hline(y=h1_target, line_dash="dot", line_color="#00FF00", line_width=1.5,
+                          annotation_text=f"1H Target: ₹{h1_target:,.2f}", annotation_position="top right")
+        if h2_target:
+            fig.add_hline(y=h2_target, line_dash="dash", line_color="#00DD88", line_width=2,
+                          annotation_text=f"2H Target: ₹{h2_target:,.2f}", annotation_position="top right")
+        if h3_target:
+            fig.add_hline(y=h3_target, line_dash="solid", line_color="#00AAFF", line_width=2.5,
+                          annotation_text=f"3H Target: ₹{h3_target:,.2f}", annotation_position="top right")
 
     fig.update_layout(
         xaxis_rangeslider_visible=False,
