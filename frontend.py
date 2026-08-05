@@ -136,6 +136,42 @@ class MarketFeatureEngine:
             return default_res
 
 
+# --- Options Analytics UI Boxes ---
+def render_options_boxes(options_data: dict):
+    st.subheader("📊 Options Chain Analytics")
+    cols = st.columns(3)
+    
+    pcr = options_data.get('pcr', 1.0)
+    oi_bias = options_data.get('oi_bias', 0.0)
+    mean_iv = options_data.get('mean_iv', 0.20) * 100
+
+    # PCR Box
+    with cols[0]:
+        st.metric(
+            label="Put-Call Ratio (PCR)",
+            value=f"{pcr:.2f}",
+            delta="Bullish sentiment" if pcr > 1.0 else "Bearish sentiment"
+        )
+        st.caption("PCR > 1.0 indicates strong put writing (bullish market floor).")
+
+    # OI Bias Box
+    with cols[1]:
+        st.metric(
+            label="NTM Open Interest Bias",
+            value=f"{oi_bias:+.2f}",
+            delta="Call Heavy" if oi_bias < 0 else "Put Heavy"
+        )
+        st.caption("Measures Near-The-Money option open interest distribution.")
+
+    # Implied Volatility Box
+    with cols[2]:
+        st.metric(
+            label="Mean Implied Volatility (IV)",
+            value=f"{mean_iv:.1f}%"
+        )
+        st.caption("Average implied volatility across near-the-money option contracts.")
+
+
 # --- Fetch Market Data ---
 @st.cache_data(ttl=5, show_spinner=False)
 def get_market_data(symbol: str, p: str, i: str):
@@ -170,9 +206,14 @@ def render_live_dashboard(ticker: str, p: str, i: str):
     df_feat = MarketFeatureEngine.calculate_technical_indicators(df_raw)
     latest_row = df_feat.iloc[-1]
     
-    # Try fetching fast live price, fallback to historical close
+    # Direct live spot price fetch to avoid historical candle delay
     try:
-        spot_price = float(yf.Ticker(ticker).fast_info['lastPrice'])
+        live_ticker = yf.Ticker(ticker)
+        fast_price = live_ticker.fast_info.get('lastPrice', None)
+        if fast_price and not np.isnan(fast_price):
+            spot_price = float(fast_price)
+        else:
+            spot_price = float(latest_row['close'])
     except Exception:
         spot_price = float(latest_row['close'])
 
@@ -202,12 +243,17 @@ def render_live_dashboard(ticker: str, p: str, i: str):
     st.subheader(f"📌 {company_name} (`{ticker}`)")
     st.caption(f"⚡ **LIVE STREAM** | Last Updated: **{latest_row['timestamp']}** | Period: **{p}** | Timeframe: **{i}**")
 
-    # Metrics Display
+    # Primary Metrics Display
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Live Spot Price", f"₹{spot_price:,.2f}")
     c2.metric("Predicted Signal", f"{'🟢' if signal_label=='BULLISH' else ('🔴' if signal_label=='BEARISH' else '⚪')} {signal_label}")
     c3.metric("RSI (14)", f"{rsi_val:.1f}")
     c4.metric("Put-Call Ratio (PCR)", f"{pcr:.2f}")
+
+    st.markdown("---")
+
+    # --- RESTORED OPTIONS ANALYTICS 3 BOXES ---
+    render_options_boxes(options_data)
 
     st.markdown("---")
 
