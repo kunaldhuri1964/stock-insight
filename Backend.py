@@ -8,23 +8,7 @@ from datetime import timedelta
 from xgboost import XGBClassifier
 from sklearn.model_selection import train_test_split
 
-
-
 # Graceful optional imports
-try:
-  from pipeline import extract_58_candlestick_patterns
-
-  HAS_PIPELINE = True
-except Exception:
-  HAS_PIPELINE = False
-
-try:
-  from nsepython import nse_eq, nse_get_index_quote
-
-  HAS_NSEPYTHON = True
-except Exception:
-  HAS_NSEPYTHON = False
-# Attempt to import optional dependencies safely
 try:
     from pipeline import extract_58_candlestick_patterns
     HAS_PIPELINE = True
@@ -116,7 +100,7 @@ class HorizonPredictor:
             return {}
 
         df_cols = {col.lower(): col for col in live_df.columns}
-        close_col = df_cols.get('close', df_cols.get('close', 'close'))
+        close_col = df_cols.get('close', 'close')
         current_price = float(live_df[close_col].iloc[-1])
 
         # Feature-based Model Pipeline Execution
