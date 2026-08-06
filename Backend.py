@@ -395,3 +395,15 @@ def train_and_predict(data: pd.DataFrame, prediction_horizon: int = 1):
     }
 
     return latest_pred, latest_prob, model, forecast_data
+
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+
+accuracy = accuracy_score(y_test, y_pred)
+precision = precision_score(y_test, y_pred)
+recall = recall_score(y_test, y_pred)
+f1 = f1_score(y_test, y_pred)
+
+print("Accuracy:", accuracy)
+print("Precision:", precision)
+print("Recall:", recall)
+print("F1:", f1)
