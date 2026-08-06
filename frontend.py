@@ -4,6 +4,29 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
+import streamlit as st
+import pandas as pd
+from sklearn.metrics import accuracy_score, precision_score, recall_score
+
+# ==========================================
+# STEP 1: DEFINE THE FUNCTION (Place near top of frontend.py)
+# ==========================================
+def evaluate_model_accuracy(df: pd.DataFrame) -> dict:
+    if df is None or df.empty or len(df) < 10:
+        return {"accuracy": 0.0, "precision": 0.0, "recall": 0.0}
+    
+    # Compare ground truth (next candle direction) vs model signal (EMA Crossover)
+    y_true = (df['close'].shift(-1) > df['close']).astype(int)[:-1]
+    y_pred = (df['ema_20'] > df['ema_50']).astype(int)[:-1]
+    
+    return {
+        "accuracy": float(accuracy_score(y_true, y_pred)),
+        "precision": float(precision_score(y_true, y_pred, average='macro', zero_division=0)),
+        "recall": float(recall_score(y_true, y_pred, average='macro', zero_division=0))
+    }
+
+
+
 
 # --- Page Configuration ---
 st.set_page_config(
@@ -360,6 +383,19 @@ def render_live_dashboard(ticker: str, p: str, i: str):
         h1_target = horizons.get('1H', {}).get('center', None)
         h2_target = horizons.get('2H', {}).get('center', None)
         h3_target = horizons.get('3H', {}).get('center', None)
+        # ==========================================
+# STEP 2: CALL AND DISPLAY METRICS (Around Line 387)
+# ==========================================
+if df_feat is not None and not df_feat.empty:
+    metrics = evaluate_model_accuracy(df_feat)
+else:
+    metrics = {"accuracy": 0.0, "precision": 0.0, "recall": 0.0}
+
+# Display metrics in Streamlit columns
+m_col1, m_col2, m_col3 = st.columns(3)
+m_col1.metric("Model Accuracy", f"{metrics['accuracy'] * 100:.1f}%")
+m_col2.metric("Precision", f"{metrics['precision'] * 100:.1f}%")
+m_col3.metric("Recall", f"{metrics['recall'] * 100:.1f}%")
 
         if h1_target:
             fig.add_hline(y=h1_target, line_dash="dot", line_color="#00FF00", line_width=1.5,
