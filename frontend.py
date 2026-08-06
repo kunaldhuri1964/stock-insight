@@ -4,24 +4,76 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, precision_score, recall_score
 
 
 # ==========================================
-# STEP 1: MODEL EVALUATION FUNCTION
+# STEP 1: RANDOM FOREST MODEL EVALUATION
 # ==========================================
 def evaluate_model_accuracy(df: pd.DataFrame) -> dict:
-    if df is None or df.empty or len(df) < 10:
+    """Trains a Random Forest Classifier on engineered technical features
+
+    and evaluates performance on out-of-sample historical test data.
+    """
+    if df is None or df.empty or len(df) < 50:
         return {"accuracy": 0.0, "precision": 0.0, "recall": 0.0}
 
-    # Compare ground truth (next candle direction) vs model signal (EMA Crossover)
-    y_true = (df['close'].shift(-1) > df['close']).astype(int)[:-1]
-    y_pred = (df['ema_20'] > df['ema_50']).astype(int)[:-1]
+    data = df.copy()
+
+    # 1. Feature Engineering
+    data['return_1'] = data['close'].pct_change(1)
+    data['return_3'] = data['close'].pct_change(3)
+    data['return_5'] = data['close'].pct_change(5)
+    data['vol_change'] = data['volume'].pct_change(1)
+    data['ema_ratio'] = data['ema_20'] / (data['ema_50'] + 1e-9)
+
+    # MACD Calculation
+    ema_12 = data['close'].ewm(span=12, adjust=False).mean()
+    ema_26 = data['close'].ewm(span=26, adjust=False).mean()
+    data['macd'] = ema_12 - ema_26
+    data['macd_signal'] = data['macd'].ewm(span=9, adjust=False).mean()
+    data['macd_hist'] = data['macd'] - data['macd_signal']
+
+    # Target: 1 if next candle close is higher, else 0
+    data['target'] = (data['close'].shift(-1) > data['close']).astype(int)
+
+    # Drop non-feature columns and NaN rows
+    feature_cols = [
+        'rsi', 'atr', 'return_1', 'return_3', 'return_5',
+        'vol_change', 'ema_ratio', 'macd_hist'
+    ]
+    clean_data = data.dropna(subset=feature_cols + ['target'])
+
+    if len(clean_data) < 30:
+        return {"accuracy": 0.0, "precision": 0.0, "recall": 0.0}
+
+    X = clean_data[feature_cols]
+    y = clean_data['target']
+
+    # 2. Time-Series Train-Test Split (80% Train / 20% Out-of-Sample Test)
+    split_idx = int(len(clean_data) * 0.8)
+    X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
+    y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
+
+    if len(np.unique(y_train)) < 2 or len(X_test) == 0:
+        return {"accuracy": 0.0, "precision": 0.0, "recall": 0.0}
+
+    # 3. Model Training
+    model = RandomForestClassifier(
+        n_estimators=100,
+        max_depth=5,
+        min_samples_split=5,
+        random_state=42
+    )
+    model.fit(X_train, y_train)
+
+    y_pred = model.predict(X_test)
 
     return {
-        "accuracy": float(accuracy_score(y_true, y_pred)),
-        "precision": float(precision_score(y_true, y_pred, average='macro', zero_division=0)),
-        "recall": float(recall_score(y_true, y_pred, average='macro', zero_division=0))
+        "accuracy": float(accuracy_score(y_test, y_pred)),
+        "precision": float(precision_score(y_test, y_pred, average='macro', zero_division=0)),
+        "recall": float(recall_score(y_test, y_pred, average='macro', zero_division=0))
     }
 
 
@@ -131,7 +183,7 @@ class MarketFeatureEngine:
             total_put_oi = puts['openInterest'].fillna(0).sum()
             pcr = (total_put_oi / total_call_oi) if total_call_oi > 0 else 1.0
 
-            # Filter Near-the-Money (NTM) Options for OI & IV Sentiment Analysis
+            # Filter Near-the-Money (NTM) Options
             calls_ntm = calls[abs(calls['strike'] - spot_price) / spot_price <= 0.05]
             puts_ntm = puts[abs(puts['strike'] - spot_price) / spot_price <= 0.05]
 
@@ -139,10 +191,8 @@ class MarketFeatureEngine:
             put_oi_ntm = puts_ntm['openInterest'].fillna(0).sum()
             total_ntm_oi = call_oi_ntm + put_oi_ntm
 
-            # Directional bias based on options positioning (-1.0 to +1.0)
             oi_bias = (put_oi_ntm - call_oi_ntm) / (total_ntm_oi + 1e-9) if total_ntm_oi > 0 else 0.0
 
-            # Average Implied Volatility
             iv_calls = calls_ntm['impliedVolatility'].fillna(0.20).mean()
             iv_puts = puts_ntm['impliedVolatility'].fillna(0.20).mean()
             mean_iv = (iv_calls + iv_puts) / 2.0 if not np.isnan(iv_calls) else 0.20
