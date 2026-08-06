@@ -382,7 +382,7 @@ def render_live_dashboard(ticker: str, p: str, i: str):
 
 
 # --- EXECUTE THE LIVE FRAGMENT ---
-from backend import evaluate_model_accuracy
+from Backend import evaluate_model_accuracy
 
 metrics = evaluate_model_accuracy(df_feat)
 
