@@ -382,49 +382,10 @@ def render_live_dashboard(ticker: str, p: str, i: str):
 
 
 # --- EXECUTE THE LIVE FRAGMENT ---
-render_live_dashboard(ticker_symbol, period, interval)
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+from backend import evaluate_model_accuracy
 
-def evaluate_model_accuracy(df_feat):
-    """
-    Compares historical AI signals against actual candle price direction.
-    """
-    df = df_feat.copy()
-    
-    # 1. Define Ground Truth: Actual direction (1 if next close > current close, else 0)
-    df['actual_direction'] = (df['close'].shift(-1) > df['close']).astype(int)
-    
-    # 2. Define Predicted Direction based on RSI & Moving Average momentum
-    # (1 = Bullish, 0 = Bearish/Neutral)
-    df['predicted_direction'] = np.where(df['rsi'] > 50, 1, 0)
-    
-    # Drop last row since its future close is unknown
-    valid_df = df.dropna(subset=['actual_direction'])
-    
-    y_true = valid_df['actual_direction']
-    y_pred = valid_df['predicted_direction']
-    
-    # 3. Calculate Performance Metrics
-    acc = accuracy_score(y_true, y_pred)
-    prec = precision_score(y_true, y_pred, zero_division=0)
-    rec = recall_score(y_true, y_pred, zero_division=0)
-    f1 = f1_score(y_true, y_pred, zero_division=0)
-    
-    return {
-        "accuracy": round(acc * 100, 2),
-        "precision": round(prec * 100, 2),
-        "recall": round(rec * 100, 2),
-        "f1": round(f1 * 100, 2)
-    }
-    from backend import evaluate_model_accuracy
 metrics = evaluate_model_accuracy(df_feat)
 
-st.subheader("🎯 Model Historical Accuracy & Metrics")
-m1, m2, m3, m4 = st.columns(4)
-
-m1.metric("Model Accuracy", f"{metrics['accuracy']}%")
-m2.metric("Precision", f"{metrics['precision']}%")
-m3.metric("Recall", f"{metrics['recall']}%")
-m4.metric("F1-Score", f"{metrics['f1']}%")
-
-st.markdown("---")
+st.write("Accuracy:", metrics["accuracy"])
+st.write("Precision:", metrics["precision"])
+st.write("Recall:", metrics["recall"])
