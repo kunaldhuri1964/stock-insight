@@ -9,11 +9,11 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score
 
 
 # ==========================================
-# STEP 1: RANDOM FOREST MODEL EVALUATION
+# STEP 1: RANDOM FOREST MODEL EVALUATION (FIXED)
 # ==========================================
 def evaluate_model_accuracy(df: pd.DataFrame) -> dict:
-    """Trains a Random Forest Classifier on engineered technical features
-
+    """
+    Trains a Random Forest Classifier on engineered technical features
     and evaluates performance on out-of-sample historical test data.
     """
     if df is None or df.empty or len(df) < 50:
@@ -38,11 +38,15 @@ def evaluate_model_accuracy(df: pd.DataFrame) -> dict:
     # Target: 1 if next candle close is higher, else 0
     data['target'] = (data['close'].shift(-1) > data['close']).astype(int)
 
-    # Drop non-feature columns and NaN rows
     feature_cols = [
         'rsi', 'atr', 'return_1', 'return_3', 'return_5',
         'vol_change', 'ema_ratio', 'macd_hist'
     ]
+
+    # Clean infinite values (inf / -inf) resulting from percentage shifts
+    data = data.replace([np.inf, -np.inf], np.nan)
+
+    # Drop any remaining NaN rows in feature columns and target
     clean_data = data.dropna(subset=feature_cols + ['target'])
 
     if len(clean_data) < 30:
@@ -75,7 +79,6 @@ def evaluate_model_accuracy(df: pd.DataFrame) -> dict:
         "precision": float(precision_score(y_test, y_pred, average='macro', zero_division=0)),
         "recall": float(recall_score(y_test, y_pred, average='macro', zero_division=0))
     }
-
 
 # --- Page Configuration ---
 st.set_page_config(
