@@ -4,28 +4,25 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
-import streamlit as st
-import pandas as pd
 from sklearn.metrics import accuracy_score, precision_score, recall_score
 
+
 # ==========================================
-# STEP 1: DEFINE THE FUNCTION (Place near top of frontend.py)
+# STEP 1: MODEL EVALUATION FUNCTION
 # ==========================================
 def evaluate_model_accuracy(df: pd.DataFrame) -> dict:
     if df is None or df.empty or len(df) < 10:
         return {"accuracy": 0.0, "precision": 0.0, "recall": 0.0}
-    
+
     # Compare ground truth (next candle direction) vs model signal (EMA Crossover)
     y_true = (df['close'].shift(-1) > df['close']).astype(int)[:-1]
     y_pred = (df['ema_20'] > df['ema_50']).astype(int)[:-1]
-    
+
     return {
         "accuracy": float(accuracy_score(y_true, y_pred)),
         "precision": float(precision_score(y_true, y_pred, average='macro', zero_division=0)),
         "recall": float(recall_score(y_true, y_pred, average='macro', zero_division=0))
     }
-
-
 
 
 # --- Page Configuration ---
@@ -92,7 +89,7 @@ class MarketFeatureEngine:
     @staticmethod
     def calculate_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
-        
+
         # True Range & ATR (14)
         high_low = df['high'] - df['low']
         high_close = np.abs(df['high'] - df['close'].shift())
@@ -163,25 +160,25 @@ class MarketFeatureEngine:
         """Calculates 1H, 2H, and 3H target bounds based on ATR, Signal Direction & PCR Sentiment."""
         pcr = options_data.get('pcr', 1.0)
         direction = 1 if signal > 0 else (-1 if signal < 0 else 0)
-        
+
         predictions = {}
         horizons = {"1H": 1, "2H": 2, "3H": 3}
-        
+
         for name, multiplier in horizons.items():
             move = atr_val * multiplier * (0.8 if direction != 0 else 0.4)
             center = spot_price + (move * direction)
             spread = atr_val * (0.5 * multiplier)
-            
+
             lower = center - spread
             upper = center + spread
-            
+
             pcr_sentiment = "Bullish PCR (>1.0)" if pcr > 1.0 else "Bearish PCR (<1.0)"
             active_triggers = []
             if direction > 0:
                 active_triggers.append("Bullish Momentum")
             elif direction < 0:
                 active_triggers.append("Bearish Momentum")
-            
+
             predictions[name] = {
                 "center": float(center),
                 "spread": float(spread),
@@ -190,7 +187,7 @@ class MarketFeatureEngine:
                 "active_patterns": active_triggers,
                 "options_sentiment": pcr_sentiment
             }
-            
+
         return predictions
 
 
@@ -198,7 +195,7 @@ class MarketFeatureEngine:
 def render_options_boxes(options_data: dict):
     st.subheader("📊 Options Chain Analytics")
     cols = st.columns(3)
-    
+
     pcr = options_data.get('pcr', 1.0)
     oi_bias = options_data.get('oi_bias', 0.0)
     mean_iv = options_data.get('mean_iv', 0.20) * 100
@@ -230,38 +227,38 @@ def render_options_boxes(options_data: dict):
 # --- Render Horizon Target Cards (1H, 2H, 3H) ---
 def render_horizon_cards(predictions: dict):
     st.subheader("⏱️ Live Horizon Targets (1H, 2H, 3H)")
-    
+
     if not predictions:
         st.warning("⚠️ No horizon target data available.")
         return
 
     cols = st.columns(3)
     horizons = ["1H", "2H", "3H"]
-    
+
     for idx, h in enumerate(horizons):
         data = predictions.get(h, {})
         if not data:
             with cols[idx]:
                 st.info(f"### {h} Target\n*Data unavailable*")
             continue
-            
+
         with cols[idx]:
             st.markdown(f"### {h} Target Range")
-            
+
             center = data.get('center', 0.0)
             spread = data.get('spread', 0.0)
             lower = data.get('lower', 0.0)
             upper = data.get('upper', 0.0)
-            
+
             st.metric(label=f"{h} Center Target", value=f"₹{center:,.2f}", delta=f"±₹{spread:,.2f} Range")
             st.info(f"**Expected Range:** ₹{lower:,.2f} — ₹{upper:,.2f}")
-            
+
             active_patterns = data.get('active_patterns', [])
             if active_patterns:
                 st.caption(f"🎯 **Triggers:** {', '.join(active_patterns)}")
             else:
                 st.caption("🎯 **Triggers:** Neutral / None")
-                
+
             pcr_sentiment = data.get('options_sentiment', None)
             if pcr_sentiment:
                 st.caption(f"📊 **Options Bias:** {pcr_sentiment}")
@@ -277,7 +274,7 @@ def get_market_data(symbol: str, p: str, i: str):
             if not df.empty:
                 df.rename(columns={
                     "Date": "timestamp", "Datetime": "timestamp",
-                    "Open": "open", "High": "high", 
+                    "Open": "open", "High": "high",
                     "Low": "low", "Close": "close", "Volume": "volume"
                 }, inplace=True)
                 df['timestamp'] = pd.to_datetime(df['timestamp']).dt.strftime('%H:%M:%S (%d %b)')
@@ -300,7 +297,7 @@ def render_live_dashboard(ticker: str, p: str, i: str):
 
     df_feat = MarketFeatureEngine.calculate_technical_indicators(df_raw)
     latest_row = df_feat.iloc[-1]
-    
+
     # Direct live spot price fetch
     try:
         live_ticker = yf.Ticker(ticker)
@@ -342,12 +339,19 @@ def render_live_dashboard(ticker: str, p: str, i: str):
     st.subheader(f"📌 {company_name} (`{ticker}`)")
     st.caption(f"⚡ **LIVE STREAM** | Last Updated: **{latest_row['timestamp']}** | Period: **{p}** | Timeframe: **{i}**")
 
-    # Primary Metrics Display
-    c1, c2, c3, c4 = st.columns(4)
+    # ==========================================
+    # PRIMARY METRICS + EVALUATION METRICS DISPLAY
+    # ==========================================
+    metrics = evaluate_model_accuracy(df_feat)
+
+    c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
     c1.metric("Live Spot Price", f"₹{spot_price:,.2f}")
-    c2.metric("Predicted Signal", f"{'🟢' if signal_label=='BULLISH' else ('🔴' if signal_label=='BEARISH' else '⚪')} {signal_label}")
+    c2.metric("Signal", f"{'🟢' if signal_label=='BULLISH' else ('🔴' if signal_label=='BEARISH' else '⚪')} {signal_label}")
     c3.metric("RSI (14)", f"{rsi_val:.1f}")
-    c4.metric("Put-Call Ratio (PCR)", f"{pcr:.2f}")
+    c4.metric("PCR", f"{pcr:.2f}")
+    c5.metric("Accuracy", f"{metrics['accuracy'] * 100:.1f}%")
+    c6.metric("Precision", f"{metrics['precision'] * 100:.1f}%")
+    c7.metric("Recall", f"{metrics['recall'] * 100:.1f}%")
 
     st.markdown("---")
 
@@ -383,19 +387,6 @@ def render_live_dashboard(ticker: str, p: str, i: str):
         h1_target = horizons.get('1H', {}).get('center', None)
         h2_target = horizons.get('2H', {}).get('center', None)
         h3_target = horizons.get('3H', {}).get('center', None)
-        # ==========================================
-# STEP 2: CALL AND DISPLAY METRICS (Around Line 387)
-# ==========================================
-if df_feat is not None and not df_feat.empty:
-    metrics = evaluate_model_accuracy(df_feat)
-else:
-    metrics = {"accuracy": 0.0, "precision": 0.0, "recall": 0.0}
-
-# Display metrics in Streamlit columns
-m_col1, m_col2, m_col3 = st.columns(3)
-m_col1.metric("Model Accuracy", f"{metrics['accuracy'] * 100:.1f}%")
-m_col2.metric("Precision", f"{metrics['precision'] * 100:.1f}%")
-m_col3.metric("Recall", f"{metrics['recall'] * 100:.1f}%")
 
         if h1_target:
             fig.add_hline(y=h1_target, line_dash="dot", line_color="#00FF00", line_width=1.5,
@@ -418,10 +409,4 @@ m_col3.metric("Recall", f"{metrics['recall'] * 100:.1f}%")
 
 
 # --- EXECUTE THE LIVE FRAGMENT ---
-from Backend import evaluate_model_accuracy
-
-metrics = evaluate_model_accuracy(df_feat)
-
-st.write("Accuracy:", metrics["accuracy"])
-st.write("Precision:", metrics["precision"])
-st.write("Recall:", metrics["recall"])
+render_live_dashboard(ticker_symbol, period, interval)
