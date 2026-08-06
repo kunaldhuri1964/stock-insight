@@ -395,21 +395,15 @@ def train_and_predict(data: pd.DataFrame, prediction_horizon: int = 1):
     }
 
     return latest_pred, latest_prob, model, forecast_data
-@app.route("/predict", methods=["GET"])
+from sklearn.metrics import accuracy_score, precision_score, recall_score
+
 def evaluate_model_accuracy(df_feat):
-    X_test, y_test = get_test_data()
-    y_pred = model.predict(X_test)   # y_pred is 0/1 (down/up)
+    X_test, y_test = get_test_data(df_feat)   # however you already split test data
+    y_pred = model.predict(X_test)
 
-    from sklearn.metrics import accuracy_score, precision_score, recall_score
-    accuracy = accuracy_score(y_test, y_pred)
-    precision = precision_score(y_test, y_pred)
-    recall = recall_score(y_test, y_pred)
-
-    return {
-        "prediction": "up" if y_pred[-1] == 1 else "down",
-        "metrics": {
-            "accuracy": accuracy,
-            "precision": precision,
-            "recall": recall
-        }
+    metrics = {
+        "accuracy": accuracy_score(y_test, y_pred),
+        "precision": precision_score(y_test, y_pred),
+        "recall": recall_score(y_test, y_pred)
     }
+    return metrics
