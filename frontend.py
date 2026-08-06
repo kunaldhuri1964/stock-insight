@@ -416,7 +416,7 @@ def evaluate_model_accuracy(df_feat):
         "recall": round(rec * 100, 2),
         "f1": round(f1 * 100, 2)
     }
-    # Compute model accuracy over historical candles
+    from backend import evaluate_model_accuracy
 metrics = evaluate_model_accuracy(df_feat)
 
 st.subheader("🎯 Model Historical Accuracy & Metrics")
