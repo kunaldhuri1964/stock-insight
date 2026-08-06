@@ -395,15 +395,21 @@ def train_and_predict(data: pd.DataFrame, prediction_horizon: int = 1):
     }
 
     return latest_pred, latest_prob, model, forecast_data
+@app.route("/predict", methods=["GET"])
+def predict():
+    X_test, y_test = get_test_data()
+    y_pred = model.predict(X_test)   # y_pred is 0/1 (down/up)
 
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+    from sklearn.metrics import accuracy_score, precision_score, recall_score
+    accuracy = accuracy_score(y_test, y_pred)
+    precision = precision_score(y_test, y_pred)
+    recall = recall_score(y_test, y_pred)
 
-accuracy = accuracy_score(y_test, y_pred)
-precision = precision_score(y_test, y_pred)
-recall = recall_score(y_test, y_pred)
-f1 = f1_score(y_test, y_pred)
-
-print("Accuracy:", accuracy)
-print("Precision:", precision)
-print("Recall:", recall)
-print("F1:", f1)
+    return {
+        "prediction": "up" if y_pred[-1] == 1 else "down",
+        "metrics": {
+            "accuracy": accuracy,
+            "precision": precision,
+            "recall": recall
+        }
+    }
